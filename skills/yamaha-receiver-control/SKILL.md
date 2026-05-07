@@ -5,7 +5,7 @@ license: MIT
 metadata:
   source-repo: github.com/ljagiello/yamaha-cli
   protocol: YamahaExtendedControl (YXC)
-compatibility: Requires Go 1.22+ to install from source, or a prebuilt yamaha binary on PATH. Receiver must be on the same LAN as the host running the skill (SSDP discovery + UDP event push are link-local). No HTTPS, no auth.
+compatibility: Requires Go 1.26+ to install from source (see go.mod), or a prebuilt yamaha binary on PATH. Receiver must be on the same LAN as the host running the skill (SSDP discovery + UDP event push are link-local). No HTTPS, no auth.
 ---
 
 # yamaha-receiver-control
