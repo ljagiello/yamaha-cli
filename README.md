@@ -215,6 +215,40 @@ Practical implications:
 - The CLI has no credentials to manage and writes none to disk.
 - Don't port-forward port 80 of the receiver to the public internet.
 
+## Using with AI agents (Claude Code, Anthropic API, …)
+
+This repo ships an [Agent Skill](https://agentskills.io/specification) at `skills/yamaha-receiver-control/` so coding/automation agents can drive `yamaha` without re-deriving its surface from `--help`. The skill provides a third-person description that activates on intents like "turn the receiver on", "switch to HDMI 2", "mute the bedroom amp", plus reference files for the full command/flag matrix and config schema.
+
+**Layout** (per the [agentskills.io spec](https://agentskills.io/specification)):
+
+```text
+skills/yamaha-receiver-control/
+├── SKILL.md                  # entry point: setup, commands, exit codes, gotchas
+└── references/
+    ├── COMMANDS.md           # full subcommand & flag reference
+    └── CONFIG.md             # config schema, resolution order, DHCP resilience
+```
+
+**Claude Code** — install user-level (every project) or project-level (one repo):
+
+```bash
+# User-level: works in any project on this machine.
+mkdir -p ~/.claude/skills
+cp -r skills/yamaha-receiver-control ~/.claude/skills/
+# Or symlink from a clone of this repo if you'd rather track upstream:
+# ln -s "$(pwd)/skills/yamaha-receiver-control" ~/.claude/skills/
+
+# Project-level: scoped to one repo.
+mkdir -p .claude/skills
+cp -r /path/to/yamaha-cli/skills/yamaha-receiver-control .claude/skills/
+```
+
+After install, ask the agent in plain English (`"turn the receiver on and switch to HDMI 2"`, `"what's the volume in dB?"`, `"discover the Yamaha on my LAN and save it as 'living-room'"`) — it'll pick up the skill automatically and shell out to `yamaha` with the right flags.
+
+**Other runtimes** (Anthropic API Skills, custom agent frameworks): install per the [agentskills.io spec](https://agentskills.io/specification) — the skill name `yamaha-receiver-control` matches its directory name, and progressive disclosure works as designed (the metadata is ~100 tokens; `SKILL.md` body loads only when the skill activates; `references/*.md` files load only when the agent navigates to them).
+
+**Prerequisite:** the agent's host needs the `yamaha` binary on `PATH` (`go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest`) and LAN access to the receiver — same as a human user.
+
 ## Roadmap
 
 Phase 1 (this README) is the MVP. Phases 2 and 3 are deferred:
