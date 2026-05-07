@@ -57,7 +57,7 @@ func runVolume(cmd *cobra.Command, args []string) error {
 
 // parseVolumeArg turns the user's positional + flag combo into a
 // yxc.VolumeArg. Combining --db/--percent with up/down/+N/-N is a usage
-// error per PLAN.v6 ("Volume command").
+// error ("Volume command").
 func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFlag bool, stepFlag int) (yxc.VolumeArg, error) {
 	switch raw {
 	case "up", "UP", "Up":
@@ -128,7 +128,7 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 
 // mustRangeStep returns the integer (min,max,step) for the active zone
 // from cached features, fetching once if needed. Returns an error when
-// features are unavailable — per PLAN.v6 we never hardcode a volume range.
+// features are unavailable — we never hardcode a volume range.
 func mustRangeStep(ctx context.Context, s *state) (int, int, int, error) {
 	feats, err := loadFeatures(ctx, s, false)
 	if err != nil {

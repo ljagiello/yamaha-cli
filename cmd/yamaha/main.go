@@ -1,6 +1,6 @@
 // Command yamaha is a CLI for controlling Yamaha YXC/MusicCast receivers.
 //
-// See PLAN.v6.md and the README for the supported subcommands.
+// See the README for the supported subcommands.
 package main
 
 import (

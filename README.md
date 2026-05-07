@@ -256,8 +256,6 @@ Phase 1 (this README) is the MVP. Phases 2 and 3 are deferred:
   alarms, Sonos integration). Anything not yet typed is reachable from day
   one once `raw` lands.
 
-See `PLAN.v6.md` for the full design doc.
-
 ## Contributing & License
 
 Personal-use CLI; PRs welcome but no guarantees on review velocity. MIT —

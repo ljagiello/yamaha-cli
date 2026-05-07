@@ -52,7 +52,7 @@ func validateInput(ctx context.Context, s *state, name string) (*yxc.Features, e
 		return feats, nil
 	}
 	// One refresh on miss — covers the "user upgraded firmware mid-week"
-	// case from PLAN.v6 ("getFeatures cache invalidation").
+	// case from  ("getFeatures cache invalidation").
 	feats, err = loadFeatures(ctx, s, true)
 	if err != nil {
 		return nil, err

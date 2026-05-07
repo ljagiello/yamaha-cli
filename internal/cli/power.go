@@ -17,7 +17,7 @@ import (
 const powerOnTimeout = 10 * time.Second
 
 // powerPollInterval is the tick spacing for the wait loop. 200 ms
-// matches PLAN.v6 ("Power-on wait").
+// matches  ("Power-on wait").
 const powerPollInterval = 200 * time.Millisecond
 
 func newPowerCmd() *cobra.Command {

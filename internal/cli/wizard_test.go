@@ -13,7 +13,7 @@ func TestSlugify(t *testing.T) {
 		in   string
 		want string
 	}{
-		// PLAN.v6 "First-run flow": "RX-V583 FBE863" → "rx-v583-fbe863"
+		// the README "First-run flow": "RX-V583 FBE863" → "rx-v583-fbe863"
 		{"RX-V583 FBE863", "rx-v583-fbe863"},
 		// Whitespace + punctuation → single dashes, no leading/trailing.
 		{"  My Living Room!!  ", "my-living-room"},

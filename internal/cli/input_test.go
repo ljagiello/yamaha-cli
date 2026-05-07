@@ -56,7 +56,7 @@ func resolvedCachePath(t *testing.T, deviceID string) string {
 }
 
 // thinFeatures returns a Features blob that lacks hdmi3 — the "stale
-// cache" scenario from PLAN.v6 DoD: cache deliberately omits an input the
+// cache" scenario from the README DoD: cache deliberately omits an input the
 // firmware now supports.
 func thinFeatures() *yxc.Features {
 	return &yxc.Features{
@@ -105,7 +105,7 @@ func writeCachedFeatures(t *testing.T, path string, feats *yxc.Features) {
 	}
 }
 
-// TestValidateInput_StaleCacheRefresh asserts the PLAN.v6 acceptance
+// TestValidateInput_StaleCacheRefresh asserts the the README acceptance
 // criterion: when the cached features omit an input the user names, the
 // CLI auto-refreshes (one extra getFeatures), validates, and persists the
 // refreshed payload to disk. setInput itself is the caller's job — this

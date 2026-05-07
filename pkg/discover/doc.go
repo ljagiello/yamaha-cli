@@ -13,5 +13,5 @@
 //
 // Search returns all Yamaha devices found within the timeout.
 // LookupByUDN returns the device whose UDN matches; it is the entry point
-// for the DHCP-resilience flow described in PLAN.v6.md.
+// for the DHCP-resilience flow in the README.
 package discover

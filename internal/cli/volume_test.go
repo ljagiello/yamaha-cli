@@ -54,7 +54,7 @@ func newVolumeTestState(t *testing.T, srv *httptest.Server, deviceID string) *st
 	}
 }
 
-// TestRunVolume_PlusFiveOneRequest asserts the PLAN.v6 acceptance
+// TestRunVolume_PlusFiveOneRequest asserts the the README acceptance
 // criterion: `yamaha volume +5` issues exactly one setVolume request with
 // volume=up and step=5.
 func TestRunVolume_PlusFiveOneRequest(t *testing.T) {
@@ -109,7 +109,7 @@ func TestRunVolume_PlusFiveOneRequest(t *testing.T) {
 	}
 }
 
-// TestRunVolume_DBWithDeltaErrors asserts PLAN.v6: combining --db with a
+// TestRunVolume_DBWithDeltaErrors asserts the README: combining --db with a
 // signed delta (+5) is a usage error (exit 2). No setVolume request must
 // fire.
 func TestRunVolume_DBWithDeltaErrors(t *testing.T) {

@@ -82,7 +82,7 @@ func (e *cancelledError) Error() string { return "cancelled by user" }
 func (e *cancelledError) Unwrap() error { return e.cause }
 
 // ErrorExitCode maps the various error categories returned by RunE to the
-// sysexits-lite codes documented in PLAN.v6.md.
+// sysexits-lite codes documented in the README.
 func ErrorExitCode(err error) int {
 	if err == nil {
 		return 0

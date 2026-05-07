@@ -1,7 +1,7 @@
 // Package config loads, saves, and resolves the yamaha-cli multi-device YAML
 // configuration.
 //
-// The on-disk schema is documented in PLAN.v6.md ("Configuration"). It lives
+// The on-disk schema is documented in the README ("Configuration"). It lives
 // at $XDG_CONFIG_HOME/yamaha-cli/config.yaml (with a $HOME/.config fallback
 // when os.UserConfigDir fails) and looks like:
 //
@@ -110,7 +110,7 @@ func saveTo(path string, c *Config) error {
 	return nil
 }
 
-// Resolve picks the active device using the priority order from PLAN.v6.md
+// Resolve picks the active device using the priority order from the README
 // ("Resolution order for the active device"):
 //
 //  1. --host flag         → anonymous (alias=="")

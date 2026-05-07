@@ -56,7 +56,7 @@ func printResult(cmd *cobra.Command, v any) error {
 //
 // The format is chosen from the --output flag. When the user asked for
 // JSON/YAML explicitly we emit the structured payload to stdout (per
-// PLAN.v6 "With --output json, also emit { error, code, yxc_response_code }
+// the README "With --output json, also emit { error, code, yxc_response_code }
 // to stdout"). The single-line human-readable message always goes to
 // stderr regardless.
 func printError(cmd *cobra.Command, err error) {

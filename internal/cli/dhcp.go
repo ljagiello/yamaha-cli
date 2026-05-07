@@ -28,7 +28,7 @@ var lookupByUDNFn = discover.LookupByUDN
 // is updated atomically and op is retried once with a fresh client.
 //
 // Pre-v5 configs without a saved UDN skip the rediscovery step entirely
-// (per PLAN.v6 "DHCP resilience" / "Skipped when").
+// (per the README "DHCP resilience" / "Skipped when").
 func runWithRediscover(ctx context.Context, s *state, op func(*yxc.Client) error) error {
 	if op == nil {
 		return fmt.Errorf("cli: nil op")

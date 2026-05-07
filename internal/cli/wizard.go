@@ -17,7 +17,7 @@ import (
 // wizardScanTimeout matches the first-run flow's documented 3 s SSDP wait.
 const wizardScanTimeout = 3 * time.Second
 
-// runWizard executes the first-run flow described in PLAN.v6 ("First-run
+// runWizard executes the first-run flow described in the README ("First-run
 // flow"). It writes prompts to out (typically stdout) and progress
 // chatter to errOut (stderr), reads answers from os.Stdin, and saves the
 // chosen device to disk.

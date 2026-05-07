@@ -146,4 +146,4 @@ fi
 
 - [references/COMMANDS.md](references/COMMANDS.md) — full subcommand reference, flag matrix, zone-scope table.
 - [references/CONFIG.md](references/CONFIG.md) — config schema, resolution order, env vars, DHCP-resilience details.
-- Upstream repo and source-of-truth design doc: `https://github.com/ljagiello/yamaha-cli` (see `PLAN.v6.md`).
+- Upstream repo: <https://github.com/ljagiello/yamaha-cli>.

@@ -67,7 +67,8 @@ func buildStatusPayload(ctx context.Context, s *state, st *yxc.Status) map[strin
 
 // volumeIntToDB converts the YXC integer volume (0..161) to dB. One step
 // is 0.5 dB and 0 is -80.5 dB, per the live-device readings recorded in
-// PLAN.v6 ("Verified device capabilities").
+//
+//	("Verified device capabilities").
 func volumeIntToDB(n int) float64 {
 	return -80.5 + 0.5*float64(n)
 }

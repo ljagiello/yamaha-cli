@@ -8,7 +8,7 @@ import (
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
-// TestErrorExitCode covers the full mapping table documented in PLAN.v6
+// TestErrorExitCode covers the full mapping table documented in the README
 // ("Exit codes"). Each entry is a single error → exit-code expectation.
 func TestErrorExitCode(t *testing.T) {
 	cases := []struct {
