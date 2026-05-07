@@ -57,7 +57,11 @@ func buildStatusPayload(ctx context.Context, s *state, st *yxc.Status) map[strin
 	// actual_volume when present (it already accounts for the
 	// firmware-side conversion); otherwise compute from the integer step
 	// using the device's own dB range_step.
-	feats, _ := loadFeaturesQuiet(ctx, s)
+	//
+	// Best-effort: a features fetch failure here is non-fatal — the
+	// helper functions below have safe fallbacks, and we'd rather emit
+	// approximate dB/percent than fail the whole status call.
+	feats, _ := loadFeatures(ctx, s, false)
 	if st.ActualVolume != nil {
 		out["volume_db"] = st.ActualVolume.Value
 	} else {

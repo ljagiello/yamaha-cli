@@ -57,15 +57,23 @@ type Option func(*Client)
 // timeout (e.g. the New() default, or one set by WithTimeout earlier in
 // the option list) is preserved. This makes WithHTTPClient + WithTimeout
 // composition order-independent for the common case.
+//
+// The supplied *http.Client is copied by value before any modification,
+// so callers can pass a shared client without worrying about side
+// effects from this option. Note: callers that genuinely want "no
+// timeout" cannot express that via WithHTTPClient alone — use a Client
+// constructed with no WithTimeout (or one whose default the caller
+// overrides afterwards).
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		if hc == nil {
 			return
 		}
-		if hc.Timeout == 0 && c.httpClient != nil && c.httpClient.Timeout != 0 {
-			hc.Timeout = c.httpClient.Timeout
+		clone := *hc
+		if clone.Timeout == 0 && c.httpClient != nil && c.httpClient.Timeout != 0 {
+			clone.Timeout = c.httpClient.Timeout
 		}
-		c.httpClient = hc
+		c.httpClient = &clone
 	}
 }
 

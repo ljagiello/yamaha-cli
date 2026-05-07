@@ -254,6 +254,71 @@ func TestRunWithRediscover_LookupFails(t *testing.T) {
 	}
 }
 
+// TestRunWithRediscover_LookupCancelled verifies the SIGINT-during-rediscover
+// branch: when lookupByUDNFn returns context.Canceled (the user hit Ctrl-C
+// during the SSDP scan), runWithRediscover propagates a *cancelledError so
+// ErrorExitCode returns 130 — not the transport-unreachable 69 the v1
+// review flagged.
+func TestRunWithRediscover_LookupCancelled(t *testing.T) {
+	stub := &stubLookup{
+		err: context.Canceled,
+	}
+	stub.install(t)
+
+	transportErr := newTransportError(t)
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+
+	var calls int
+	op := func(_ *yxc.Client) error {
+		calls++
+		return transportErr
+	}
+	err := runWithRediscover(context.Background(), s, op)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ce *cancelledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cancelledError, got %v (%T)", err, err)
+	}
+	if got := ErrorExitCode(err); got != 130 {
+		t.Errorf("ErrorExitCode: got %d, want 130", got)
+	}
+	if calls != 1 {
+		t.Errorf("op should run exactly once before lookup, got %d", calls)
+	}
+	if stub.calls != 1 {
+		t.Errorf("lookup should be called once, got %d", stub.calls)
+	}
+}
+
+// TestRunWithRediscover_ParentCtxCancelledDuringLookup verifies the
+// parallel path: even if the stub returned a non-Canceled error, a
+// cancelled parent ctx is sufficient to surface as *cancelledError.
+func TestRunWithRediscover_ParentCtxCancelledDuringLookup(t *testing.T) {
+	// Lookup returns a generic error; what matters is ctx.Err() != nil.
+	stub := &stubLookup{
+		err: errors.New("boom"),
+	}
+	stub.install(t)
+
+	transportErr := newTransportError(t)
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel before runWithRediscover sees it
+
+	op := func(_ *yxc.Client) error { return transportErr }
+	err := runWithRediscover(ctx, s, op)
+	var ce *cancelledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cancelledError when parent ctx is cancelled, got %v (%T)", err, err)
+	}
+	if got := ErrorExitCode(err); got != 130 {
+		t.Errorf("ErrorExitCode: got %d, want 130", got)
+	}
+}
+
 // TestRunWithRediscover_NonTransportError verifies that a non-transport
 // error from op (e.g. YXC response_code) is returned without consulting
 // the lookup at all.

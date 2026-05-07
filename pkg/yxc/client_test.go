@@ -546,3 +546,70 @@ func TestConnectionRefused_RetriesOnce(t *testing.T) {
 		t.Errorf("expected retry to add backoff (>=200ms), elapsed=%v", elapsed)
 	}
 }
+
+// TestWithHTTPClient_PreservesTimeout locks the order-independence
+// promise that WithHTTPClient + WithTimeout compose correctly: a
+// supplied client whose Timeout is zero inherits the previously-set
+// timeout (from New's default or an earlier WithTimeout), so a future
+// contributor can't accidentally regress option ordering.
+func TestWithHTTPClient_PreservesTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		opts    []Option
+		wantDur time.Duration
+	}{
+		{
+			name:    "default-then-WithHTTPClient(zero)-preserves-default",
+			opts:    []Option{WithHTTPClient(&http.Client{})},
+			wantDur: 5 * time.Second, // New's defaultTimeout
+		},
+		{
+			name: "WithTimeout-then-WithHTTPClient(zero)-preserves-WithTimeout",
+			opts: []Option{
+				WithTimeout(2 * time.Second),
+				WithHTTPClient(&http.Client{}),
+			},
+			wantDur: 2 * time.Second,
+		},
+		{
+			name: "WithHTTPClient(2s)-then-WithTimeout(5s)-WithTimeout-wins",
+			opts: []Option{
+				WithHTTPClient(&http.Client{Timeout: 2 * time.Second}),
+				WithTimeout(5 * time.Second),
+			},
+			wantDur: 5 * time.Second,
+		},
+		{
+			name: "WithHTTPClient-with-explicit-Timeout-honoured",
+			opts: []Option{
+				WithHTTPClient(&http.Client{Timeout: 7 * time.Second}),
+			},
+			wantDur: 7 * time.Second,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := New("192.0.2.1", tc.opts...)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if got := c.httpClient.Timeout; got != tc.wantDur {
+				t.Errorf("Timeout: got %v, want %v", got, tc.wantDur)
+			}
+		})
+	}
+}
+
+// TestWithHTTPClient_DoesNotMutateCaller verifies WithHTTPClient copies
+// the supplied *http.Client by value before adjusting Timeout, so
+// callers passing a shared client don't see surprise side effects.
+func TestWithHTTPClient_DoesNotMutateCaller(t *testing.T) {
+	caller := &http.Client{} // intentional zero Timeout
+	_, err := New("192.0.2.1", WithTimeout(3*time.Second), WithHTTPClient(caller))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if caller.Timeout != 0 {
+		t.Errorf("caller's Timeout was mutated: got %v, want 0", caller.Timeout)
+	}
+}

@@ -71,18 +71,6 @@ func loadFeatures(ctx context.Context, s *state, refresh bool) (*yxc.Features, e
 	return feats, nil
 }
 
-// loadFeaturesQuiet is a non-fatal variant: it never fails the calling
-// command if features can't be obtained (used by status to compute
-// volume_percent — falling back to the universal 0..161 max when the
-// fetch fails is harmless).
-func loadFeaturesQuiet(ctx context.Context, s *state) (*yxc.Features, error) {
-	feats, err := loadFeatures(ctx, s, false)
-	if err != nil {
-		return nil, err
-	}
-	return feats, nil
-}
-
 // resolveDeviceID returns the YXC device_id (LAN MAC) for the active
 // receiver. Source preference, in order:
 //
