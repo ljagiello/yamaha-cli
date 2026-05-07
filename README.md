@@ -1,13 +1,8 @@
 # yamaha-cli
 
-A command-line tool for controlling Yamaha receivers that speak the
-**YamahaExtendedControl** (YXC) protocol over the local network — the same
-HTTP/JSON API used by the MusicCast app. Built and verified against an
-RX-V583, but should work with any MusicCast-capable Yamaha.
+A command-line tool for controlling Yamaha receivers that speak the **YamahaExtendedControl** (YXC) protocol over the local network — the same HTTP/JSON API used by the MusicCast app. Built and verified against an RX-V583, but should work with any MusicCast-capable Yamaha.
 
-Phase 1 covers the most-used remote buttons (power / volume / mute / input /
-status) plus SSDP discovery, multi-device config with DHCP-resilience, and
-machine-readable output for shell pipelines.
+Phase 1 covers the most-used remote buttons (power / volume / mute / input / status) plus SSDP discovery, multi-device config with DHCP-resilience, and machine-readable output for shell pipelines.
 
 ## Install
 
@@ -98,9 +93,7 @@ Config lives where Go's `os.UserConfigDir()` points, plus `yamaha-cli/config.yam
 - **macOS:** `~/Library/Application Support/yamaha-cli/config.yaml`
 - **Windows:** `%AppData%\yamaha-cli\config.yaml`
 
-Run `yamaha config path` to print the resolved path. The wizard, `discover --add`,
-and the DHCP-resilience flow all write through a `<file>.tmp` + rename so concurrent
-invocations cannot corrupt it.
+Run `yamaha config path` to print the resolved path. The wizard, `discover --add`, and the DHCP-resilience flow all write through a `<file>.tmp` + rename so concurrent invocations cannot corrupt it.
 
 ```yaml
 default_device: living-room
@@ -145,21 +138,15 @@ Global flag: `--output {auto|json|yaml|table}` (alias `-o`). Default `auto`:
 - **Table** when stdout is a TTY (human-readable, ANSI colour by default).
 - **JSON** when stdout is piped or redirected.
 
-This is the gh / kubectl / docker idiom — `yamaha status` is pretty in your
-terminal and a parseable JSON object the moment you pipe it.
+This is the gh / kubectl / docker idiom — `yamaha status` is pretty in your terminal and a parseable JSON object the moment you pipe it.
 
-Successful mutating commands (`power on`, `volume 60`, `input hdmi2`) emit
-`{}` in JSON modes and a single `ok` line in table mode. They never re-print
-the entire device state — that's `yamaha status`'s job.
+Successful mutating commands (`power on`, `volume 60`, `input hdmi2`) emit `{}` in JSON modes and a single `ok` line in table mode. They never re-print the entire device state — that's `yamaha status`'s job.
 
 Disable colour with `--no-color` or `NO_COLOR=1`.
 
 ## Exit codes
 
-Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of
-`--output`. With `--output json` or `--output yaml`, a structured payload
-(`{ "error": "...", "code": <int>, "yxc_response_code": <int|null> }`) is
-also emitted to stdout.
+Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--output`. With `--output json` or `--output yaml`, a structured payload (`{ "error": "...", "code": <int>, "yxc_response_code": <int|null> }`) is also emitted to stdout.
 
 | Code | Meaning |
 |---|---|
@@ -173,8 +160,7 @@ also emitted to stdout.
 
 ## Zone scope
 
-`--zone {main|zone2}` only applies to zone-scoped commands. Default is the
-device's `default_zone` from config (or `main` if unset).
+`--zone {main|zone2}` only applies to zone-scoped commands. Default is the device's `default_zone` from config (or `main` if unset).
 
 | Command | Zone-scoped |
 |---|---|
@@ -188,33 +174,24 @@ device's `default_zone` from config (or `main` if unset).
 | `completion` | no |
 | `version` | no |
 
-Phase 2 will add more zone-scoped commands (`sound`, `decoder`, `scene`,
-`tone`, `sleep`); see Roadmap.
+Phase 2 will add more zone-scoped commands (`sound`, `decoder`, `scene`, `tone`, `sleep`); see Roadmap.
 
 ## DHCP resilience
 
-Receivers on home networks routinely get a new IP after DHCP renewals or
-router reboots. The CLI handles this transparently when the active device
-came from the config file (alias-resolved, with a saved UDN).
+Receivers on home networks routinely get a new IP after DHCP renewals or router reboots. The CLI handles this transparently when the active device came from the config file (alias-resolved, with a saved UDN).
 
-On any HTTP transport error (after one in-client retry), the CLI runs a 3 s
-SSDP scan filtered by manufacturer = `Yamaha Corporation`, matches the saved
-UDN, atomically updates the config with the new IP, and retries the original
-command once. The user sees only the success result — pass `--debug` to see
-the rediscovery line.
+On any HTTP transport error (after one in-client retry), the CLI runs a 3 s SSDP scan filtered by manufacturer = `Yamaha Corporation`, matches the saved UDN, atomically updates the config with the new IP, and retries the original command once. The user sees only the success result — pass `--debug` to see the rediscovery line.
 
 **Skipped when:**
-- Active device came from `--host` / `YAMAHA_HOST` (anonymous, no UDN).
-- The config entry has no UDN (pre-v5 config). Re-run `yamaha discover --add`
-  to refresh the entry, or use `--host` directly. Otherwise: exit 69.
 
-At most one rediscovery attempt per command. Repeated failures fall through
-to exit 69.
+- Active device came from `--host` / `YAMAHA_HOST` (anonymous, no UDN).
+- The config entry has no UDN (pre-v5 config). Re-run `yamaha discover --add` to refresh the entry, or use `--host` directly. Otherwise: exit 69.
+
+At most one rediscovery attempt per command. Repeated failures fall through to exit 69.
 
 ## Debugging
 
-`--debug` (or `YAMAHA_DEBUG=1`) traces every YXC request and response on
-stderr:
+`--debug` (or `YAMAHA_DEBUG=1`) traces every YXC request and response on stderr:
 
 ```text
 $ yamaha --debug volume +5
@@ -222,9 +199,7 @@ $ yamaha --debug volume +5
 ← 200 {"response_code":0}
 ```
 
-Retries are logged as `→ retry`; DHCP rediscovery as
-`→ rediscover alias=… udn=…`. Stdout stays clean — pipe to `jq` while
-debugging:
+Retries are logged as `→ retry`; DHCP rediscovery as `→ rediscover alias=… udn=…`. Stdout stays clean — pipe to `jq` while debugging:
 
 ```bash
 yamaha --debug status 2> trace.log | jq .volume_db
@@ -232,14 +207,11 @@ yamaha --debug status 2> trace.log | jq .volume_db
 
 ## Security note
 
-YXC is **HTTP-only** (no TLS) and **unauthenticated** — there is no password,
-token, or pairing step. This is the receiver's design, not a CLI choice. The
-protocol assumes a trusted LAN.
+YXC is **HTTP-only** (no TLS) and **unauthenticated** — there is no password, token, or pairing step. This is the receiver's design, not a CLI choice. The protocol assumes a trusted LAN.
 
 Practical implications:
 
-- Anyone on the same L2 segment can issue the same commands. Don't expose the
-  receiver to untrusted networks.
+- Anyone on the same L2 segment can issue the same commands. Don't expose the receiver to untrusted networks.
 - The CLI has no credentials to manage and writes none to disk.
 - Don't port-forward port 80 of the receiver to the public internet.
 
@@ -247,16 +219,9 @@ Practical implications:
 
 Phase 1 (this README) is the MVP. Phases 2 and 3 are deferred:
 
-- **Phase 2** — full surface: `sound`, `decoder`, `scene`, `tone`, `sleep`,
-  `tuner`, `netusb`, `preset`, `link`, `reboot`. Same conventions as Phase 1.
-- **Phase 3** — `watch` (UDP event subscription), MusicCast Link (multi-room
-  grouping), and `raw <method> [key=value …]` — a generic YXC GET
-  passthrough that exposes all 184 endpoints from the public spec (party
-  mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, CCS,
-  alarms, Sonos integration). Anything not yet typed is reachable from day
-  one once `raw` lands.
+- **Phase 2** — full surface: `sound`, `decoder`, `scene`, `tone`, `sleep`, `tuner`, `netusb`, `preset`, `link`, `reboot`. Same conventions as Phase 1.
+- **Phase 3** — `watch` (UDP event subscription), MusicCast Link (multi-room grouping), and `raw <method> [key=value …]` — a generic YXC GET passthrough that exposes all 184 endpoints from the public spec (party mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, CCS, alarms, Sonos integration). Anything not yet typed is reachable from day one once `raw` lands.
 
 ## Contributing & License
 
-Personal-use CLI; PRs welcome but no guarantees on review velocity. MIT —
-see [LICENSE](./LICENSE).
+Personal-use CLI; PRs welcome but no guarantees on review velocity. MIT — see [LICENSE](./LICENSE).
