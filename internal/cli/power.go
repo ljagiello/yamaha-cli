@@ -14,11 +14,16 @@ import (
 // powerOnTimeout bounds the post-`power on` poll loop. Receivers
 // typically settle in 2–5 s; 10 s leaves headroom without wasting too
 // much time when the device is genuinely failing to power on.
-const powerOnTimeout = 10 * time.Second
+//
+// Exposed as a var (not a const) so tests can shrink it without sleeping
+// for ten real seconds. Production code never assigns to it.
+var powerOnTimeout = 10 * time.Second
 
-// powerPollInterval is the tick spacing for the wait loop. 200 ms
-// matches  ("Power-on wait").
-const powerPollInterval = 200 * time.Millisecond
+// powerPollInterval is the tick spacing for the wait loop. 200 ms keeps
+// the wall-clock cost low when the receiver settles fast.
+//
+// Exposed as a var so tests can shorten it.
+var powerPollInterval = 200 * time.Millisecond
 
 func newPowerCmd() *cobra.Command {
 	return &cobra.Command{

@@ -93,9 +93,13 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 
 	// Absolute. May be int (with --db / --percent / plain) or float (with
 	// --db). Resolve the integer wire value via the device's range.
-	min, max, _, err := mustRangeStep(ctx, s)
+	feats, err := loadFeatures(ctx, s, false)
 	if err != nil {
 		return yxc.VolumeArg{}, err
+	}
+	min, max, _, ok := feats.VolumeRange(s.zone)
+	if !ok {
+		return yxc.VolumeArg{}, errors.New("volume: device features missing volume range_step")
 	}
 
 	if dbFlag {
@@ -103,8 +107,13 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		if ferr != nil {
 			return yxc.VolumeArg{}, newUsageError("invalid db value %q", raw)
 		}
-		// Inverse of volumeIntToDB: n = (db + 80.5) / 0.5
-		n := int(math.Round((f + 80.5) / 0.5))
+		// Inverse of volumeIntToDB using the device's dB range_step
+		// (falls back to the RX-V integer-step convention when absent).
+		dbMin, dbStep := -80.5, 0.5
+		if a, _, b, ok := feats.VolumeRangeDB(s.zone); ok && b > 0 {
+			dbMin, dbStep = a, b
+		}
+		n := int(math.Round((f - dbMin) / dbStep))
 		return yxc.VolumeAbsolute(clampInt(n, min, max)), nil
 	}
 	if percentFlag {
@@ -115,7 +124,7 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		if f < 0 || f > 100 {
 			return yxc.VolumeArg{}, newUsageError("--percent must be in [0,100]")
 		}
-		n := int(math.Round(f / 100 * float64(max)))
+		n := min + int(math.Round(f/100*float64(max-min)))
 		return yxc.VolumeAbsolute(clampInt(n, min, max)), nil
 	}
 
@@ -124,24 +133,6 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		return yxc.VolumeArg{}, newUsageError("invalid volume %q (want integer, ±N, up, or down)", raw)
 	}
 	return yxc.VolumeAbsolute(clampInt(n, min, max)), nil
-}
-
-// mustRangeStep returns the integer (min,max,step) for the active zone
-// from cached features, fetching once if needed. Returns an error when
-// features are unavailable — we never hardcode a volume range.
-func mustRangeStep(ctx context.Context, s *state) (int, int, int, error) {
-	feats, err := loadFeatures(ctx, s, false)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	if feats == nil {
-		return 0, 0, 0, errors.New("volume: device features unavailable; cannot resolve volume range")
-	}
-	min, max, step, ok := feats.VolumeRange(s.zone)
-	if !ok {
-		return 0, 0, 0, errors.New("volume: device features missing volume range_step")
-	}
-	return min, max, step, nil
 }
 
 func clampInt(n, lo, hi int) int {

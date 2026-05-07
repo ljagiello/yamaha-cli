@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -111,7 +112,7 @@ func TestDo_ResponseCodeMatrix(t *testing.T) {
 		{99},
 	}
 	for _, tc := range cases {
-		t.Run(http.StatusText(200), func(t *testing.T) { // sub-test name is incidental; tc.code differentiates
+		t.Run(fmt.Sprintf("code=%d", tc.code), func(t *testing.T) {
 			body := []byte(`{"response_code":` + strconv.Itoa(tc.code) + `}`)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write(body)

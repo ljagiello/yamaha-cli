@@ -52,13 +52,20 @@ type Client struct {
 type Option func(*Client)
 
 // WithHTTPClient overrides the http.Client used for all requests.
-// The client's Timeout is honoured if non-zero; otherwise the default 5s
-// timeout is preserved by composition (per-request context deadlines).
+//
+// If the supplied client has a zero Timeout, the previously-configured
+// timeout (e.g. the New() default, or one set by WithTimeout earlier in
+// the option list) is preserved. This makes WithHTTPClient + WithTimeout
+// composition order-independent for the common case.
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
-		if hc != nil {
-			c.httpClient = hc
+		if hc == nil {
+			return
 		}
+		if hc.Timeout == 0 && c.httpClient != nil && c.httpClient.Timeout != 0 {
+			hc.Timeout = c.httpClient.Timeout
+		}
+		c.httpClient = hc
 	}
 }
 
@@ -123,12 +130,6 @@ func (c *Client) BaseURL() string {
 // *Error.
 func (c *Client) Do(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
 	return c.do(ctx, method, params, false)
-}
-
-// Raw is an alias for Do, intended for the CLI's `raw` subcommand which
-// passes user-provided method paths and parameters through unchanged.
-func (c *Client) Raw(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
-	return c.Do(ctx, method, params)
 }
 
 // EventDo issues a YXC GET that subscribes to push events. It adds the

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -45,8 +46,15 @@ func runWithRediscover(ctx context.Context, s *state, op func(*yxc.Client) error
 	logRediscover(s.debug, s.alias, s.device.UDN)
 	newDev, lookupErr := lookupByUDNFn(ctx, s.device.UDN, rediscoverTimeout)
 	if lookupErr != nil {
-		// Surface the unreachable error rather than the lookup error so
-		// the user gets the consistent UDN-aware message.
+		// If the user cancelled (Ctrl-C) during the SSDP scan, surface
+		// the cancellation rather than the original transport error so
+		// the exit-code mapper returns 130 instead of 69.
+		if errors.Is(lookupErr, context.Canceled) || ctx.Err() != nil {
+			return &cancelledError{}
+		}
+		// Otherwise: surface the unreachable error (with the original
+		// transport cause) so the user gets the consistent UDN-aware
+		// message and exit 69.
 		return &unreachableError{alias: s.alias, udn: s.device.UDN, cause: err}
 	}
 

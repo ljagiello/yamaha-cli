@@ -32,9 +32,16 @@ import (
 var ErrNoDevice = errors.New("no device configured")
 
 // Device is a single configured receiver entry.
+//
+// DeviceID is the YXC device_id (typically the LAN MAC); it's persisted so
+// the feature-cache lookup can avoid an extra getDeviceInfo round-trip on
+// every command. It's populated lazily on first command after a wizard /
+// discover --add: callers fetch via getDeviceInfo and write back. Pre-v6
+// configs without the field continue to work via the same lazy fetch.
 type Device struct {
 	Host        string `yaml:"host"`
 	UDN         string `yaml:"udn,omitempty"`
+	DeviceID    string `yaml:"device_id,omitempty"`
 	DefaultZone string `yaml:"default_zone,omitempty"`
 }
 

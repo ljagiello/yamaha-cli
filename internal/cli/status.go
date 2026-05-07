@@ -55,38 +55,48 @@ func buildStatusPayload(ctx context.Context, s *state, st *yxc.Status) map[strin
 	}
 	// dB and percent are derivable. Prefer the device-supplied
 	// actual_volume when present (it already accounts for the
-	// firmware-side conversion); otherwise compute from the integer step.
+	// firmware-side conversion); otherwise compute from the integer step
+	// using the device's own dB range_step.
+	feats, _ := loadFeaturesQuiet(ctx, s)
 	if st.ActualVolume != nil {
 		out["volume_db"] = st.ActualVolume.Value
 	} else {
-		out["volume_db"] = volumeIntToDB(st.Volume)
+		out["volume_db"] = volumeIntToDB(feats, s.zone, st.Volume)
 	}
-	out["volume_percent"] = volumePercent(ctx, s, st.Volume)
+	out["volume_percent"] = volumePercent(feats, s.zone, st.Volume)
 	return out
 }
 
-// volumeIntToDB converts the YXC integer volume (0..161) to dB. One step
-// is 0.5 dB and 0 is -80.5 dB, per the live-device readings recorded in
+// volumeIntToDB converts the YXC integer volume to dB.
 //
-//	("Verified device capabilities").
-func volumeIntToDB(n int) float64 {
+// Prefers range_step{id:"actual_volume_db"} for (min, step) — keeps the
+// conversion correct on receivers with a different baseline (e.g. some
+// A-series go to -99.5). Falls back to the RX-V/A integer-step convention
+// (-80.5 baseline, 0.5 dB step) only when features are unavailable.
+func volumeIntToDB(feats *yxc.Features, zone string, n int) float64 {
+	if feats != nil {
+		if dbMin, _, dbStep, ok := feats.VolumeRangeDB(zone); ok {
+			return dbMin + dbStep*float64(n)
+		}
+	}
 	return -80.5 + 0.5*float64(n)
 }
 
 // volumePercent converts the integer volume to a 0..100 percentage using
-// the device's reported max from getFeatures. Falls back to /161 when the
-// max isn't available (e.g. features fetch failed earlier in the flow).
-func volumePercent(ctx context.Context, s *state, n int) int {
-	max := 161
-	if feats, err := loadFeaturesQuiet(ctx, s); err == nil && feats != nil {
-		if _, m, _, ok := feats.VolumeRange(s.zone); ok && m > 0 {
-			max = m
+// the device's reported (min, max) from getFeatures. Falls back to a
+// safe constant when features aren't loaded.
+func volumePercent(feats *yxc.Features, zone string, n int) int {
+	mn, mx := 0, 161
+	if feats != nil {
+		if a, b, _, ok := feats.VolumeRange(zone); ok && b > a {
+			mn, mx = a, b
 		}
 	}
-	if max <= 0 {
+	span := mx - mn
+	if span <= 0 {
 		return 0
 	}
-	pct := (100 * n) / max
+	pct := (100 * (n - mn)) / span
 	if pct < 0 {
 		pct = 0
 	}

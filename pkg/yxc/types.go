@@ -160,6 +160,29 @@ func (f *Features) VolumeRange(zone string) (min, max, step int, ok bool) {
 	return 0, 0, 0, false
 }
 
+// VolumeRangeDB returns the dB volume range for the named zone, or false
+// if unavailable. Sourced from range_step{id:"actual_volume_db"} which
+// receivers expose alongside the integer "volume" range_step (e.g. RX-V583
+// reports min=-80.5, max=16.5, step=0.5 — Yamaha A-series goes to -99.5
+// on some lines).
+//
+// Callers that need the dB scale should always prefer this over a hardcoded
+// constant; when the device omits the entry, fall back to the integer
+// "volume" range_step convention (one int step ≈ 0.5 dB, baseline = -80.5)
+// only as a last resort.
+func (f *Features) VolumeRangeDB(zone string) (min, max, step float64, ok bool) {
+	z := f.ZoneByID(zone)
+	if z == nil {
+		return 0, 0, 0, false
+	}
+	for _, r := range z.RangeStep {
+		if r.ID == "actual_volume_db" {
+			return r.Min, r.Max, r.Step, true
+		}
+	}
+	return 0, 0, 0, false
+}
+
 // ZoneHasFunc reports whether the named zone advertises the given func
 // (e.g. "prepare_input_change") in its `func_list`.
 func (f *Features) ZoneHasFunc(zone, fn string) bool {
