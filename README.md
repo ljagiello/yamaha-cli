@@ -4,6 +4,22 @@ A command-line tool for controlling Yamaha receivers that speak the **YamahaExte
 
 Phase 1 covers the most-used remote buttons (power / volume / mute / input / status) plus SSDP discovery, multi-device config with DHCP-resilience, and machine-readable output for shell pipelines.
 
+## Contents
+
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Commands (Phase 1)](#commands-phase-1)
+- [Configuration](#configuration)
+- [Output formats](#output-formats)
+- [Exit codes](#exit-codes)
+- [Zone scope](#zone-scope)
+- [DHCP resilience](#dhcp-resilience)
+- [Debugging](#debugging)
+- [Security note](#security-note)
+- [Run with Friday](#run-with-friday)
+- [Roadmap](#roadmap)
+- [Contributing & License](#contributing--license)
+
 ## Install
 
 ```bash
