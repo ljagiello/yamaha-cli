@@ -1,0 +1,27 @@
+# Binaries (anchored to repo root so cmd/yamaha/ stays tracked)
+/yamaha
+/yamaha-*
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage.out
+coverage.html
+
+# GoReleaser output
+dist/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local state
+.envrc
+.env
+
+# macOS / Windows clutter
+.DS_Store
+Thumbs.db

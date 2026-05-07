@@ -1,0 +1,265 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/pkg/yxc"
+)
+
+// resetFeatureLoader empties the package-level singleton so tests don't
+// see state from a previous test in the same run. The singleton is the
+// process-local memo for loadFeatures.
+func resetFeatureLoader(t *testing.T) {
+	t.Helper()
+	prev := fl
+	fl = &featureLoader{}
+	t.Cleanup(func() { fl = prev })
+}
+
+// redirectCacheDir points os.UserCacheDir at a temporary directory for the
+// duration of the test. yxc.FeaturesCache uses os.UserCacheDir() as the
+// default root, and on Darwin that resolves under $HOME/Library/Caches; on
+// Linux it honours XDG_CACHE_HOME. Setting both keeps the test portable.
+func redirectCacheDir(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CACHE_HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	return tmp
+}
+
+// resolvedCachePath returns the on-disk path that yxc.FeaturesCache will
+// pick for deviceID under the (test-redirected) UserCacheDir. We mirror
+// the logic in pkg/yxc/cache.go: <UserCacheDir>/yamaha-cli/<id>-features.json.
+func resolvedCachePath(t *testing.T, deviceID string) string {
+	t.Helper()
+	root, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir: %v", err)
+	}
+	dir := filepath.Join(root, "yamaha-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	return filepath.Join(dir, deviceID+"-features.json")
+}
+
+// thinFeatures returns a Features blob that lacks hdmi3 — the "stale
+// cache" scenario from PLAN.v6 DoD: cache deliberately omits an input the
+// firmware now supports.
+func thinFeatures() *yxc.Features {
+	return &yxc.Features{
+		ResponseCode: 0,
+		System: yxc.SystemFeatures{
+			ZoneNum:   1,
+			InputList: []yxc.InputItem{{ID: "hdmi1"}, {ID: "hdmi2"}},
+		},
+		Zone: []yxc.ZoneFeatures{{
+			ID:        "main",
+			FuncList:  []string{"power", "volume"},
+			InputList: []string{"hdmi1", "hdmi2"},
+		}},
+	}
+}
+
+// fatFeatures returns a Features blob that contains hdmi3 — the refreshed
+// payload the device returns after the auto-refresh.
+func fatFeatures() *yxc.Features {
+	return &yxc.Features{
+		ResponseCode: 0,
+		System: yxc.SystemFeatures{
+			ZoneNum:   1,
+			InputList: []yxc.InputItem{{ID: "hdmi1"}, {ID: "hdmi2"}, {ID: "hdmi3"}},
+		},
+		Zone: []yxc.ZoneFeatures{{
+			ID:        "main",
+			FuncList:  []string{"power", "volume", "prepare_input_change"},
+			InputList: []string{"hdmi1", "hdmi2", "hdmi3"},
+		}},
+	}
+}
+
+// writeCachedFeatures persists feats at the cache path that
+// yxc.FeaturesCache will look up for deviceID. The format must match
+// what cache.save writes (json.Encoder with indent), but encoding/json
+// round-trips cleanly so a plain Marshal works for tests.
+func writeCachedFeatures(t *testing.T, path string, feats *yxc.Features) {
+	t.Helper()
+	raw, err := json.Marshal(feats)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+}
+
+// TestValidateInput_StaleCacheRefresh asserts the PLAN.v6 acceptance
+// criterion: when the cached features omit an input the user names, the
+// CLI auto-refreshes (one extra getFeatures), validates, and persists the
+// refreshed payload to disk. setInput itself is the caller's job — this
+// test covers the validation half (which is what triggers the refresh).
+func TestValidateInput_StaleCacheRefresh(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEC0FFEE"
+
+	// Pre-populate the on-disk cache with the THIN payload so the first
+	// loadFeatures call hits the cache (no network) and returns features
+	// without hdmi3.
+	cachePath := resolvedCachePath(t, deviceID)
+	writeCachedFeatures(t, cachePath, thinFeatures())
+
+	var (
+		featuresHits  int32
+		setInputHits  int32
+		deviceInfoHit int32
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/system/getDeviceInfo"):
+			atomic.AddInt32(&deviceInfoHit, 1)
+			_, _ = w.Write([]byte(`{"response_code":0,"device_id":"` + deviceID + `","model_name":"RX-V583"}`))
+		case strings.HasSuffix(r.URL.Path, "/system/getFeatures"):
+			atomic.AddInt32(&featuresHits, 1)
+			payload, _ := json.Marshal(fatFeatures())
+			_, _ = w.Write(payload)
+		case strings.HasSuffix(r.URL.Path, "/main/setInput"):
+			atomic.AddInt32(&setInputHits, 1)
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:    &config.Config{Devices: map[string]config.Device{}},
+		alias:  "test",
+		device: config.Device{Host: srv.URL, DefaultZone: "main"},
+		zone:   "main",
+		client: c,
+	}
+
+	feats, err := validateInput(context.Background(), s, "hdmi3")
+	if err != nil {
+		t.Fatalf("validateInput: %v", err)
+	}
+	if feats == nil {
+		t.Fatal("expected non-nil features")
+	}
+	// We can't easily count "cache miss + auto-refresh" as 2 distinct
+	// hits because the on-disk cache short-circuits the first call. The
+	// observable behaviour is: exactly one getFeatures hit (the
+	// auto-refresh after the validation miss) plus one getDeviceInfo
+	// (resolveDeviceID).
+	if got := atomic.LoadInt32(&featuresHits); got != 1 {
+		t.Errorf("getFeatures hits: got %d, want 1 (auto-refresh)", got)
+	}
+	if got := atomic.LoadInt32(&deviceInfoHit); got != 1 {
+		t.Errorf("getDeviceInfo hits: got %d, want 1", got)
+	}
+
+	// Refreshed features must contain hdmi3 — the very thing we fetched
+	// for. validateInput returns the refreshed *Features.
+	if !isInputAllowed(feats, "main", "hdmi3") {
+		t.Errorf("refreshed features still missing hdmi3: %v", feats.ZoneInputs("main"))
+	}
+
+	// Cache file on disk must have been overwritten atomically with the
+	// refreshed payload.
+	raw, rerr := os.ReadFile(cachePath)
+	if rerr != nil {
+		t.Fatalf("read cache: %v", rerr)
+	}
+	var disk yxc.Features
+	if err := json.Unmarshal(raw, &disk); err != nil {
+		t.Fatalf("decode cache: %v", err)
+	}
+	if !isInputAllowed(&disk, "main", "hdmi3") {
+		t.Errorf("on-disk cache still missing hdmi3 after refresh: %v", disk.ZoneInputs("main"))
+	}
+
+	// validateInput should not have fired setInput itself; that's the
+	// caller's job. We assert it explicitly so a regression doesn't
+	// silently shift the boundary.
+	if got := atomic.LoadInt32(&setInputHits); got != 0 {
+		t.Errorf("setInput hits: got %d, want 0 (validation must not fire setInput)", got)
+	}
+}
+
+// TestRunInput_TypoZeroSetInput exercises the validation rejection path:
+// a user typo never produces a setInput request and the returned error is
+// a *ValidationError carrying suggestions.
+func TestRunInput_TypoZeroSetInput(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEAD0001"
+
+	// Both cache copies (thin and fat) lack "typo", so the auto-refresh
+	// branch is exercised AND the final result is a ValidationError.
+	cachePath := resolvedCachePath(t, deviceID)
+	writeCachedFeatures(t, cachePath, thinFeatures())
+
+	var setInputHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/system/getDeviceInfo"):
+			_, _ = w.Write([]byte(`{"response_code":0,"device_id":"` + deviceID + `","model_name":"RX-V583"}`))
+		case strings.HasSuffix(r.URL.Path, "/system/getFeatures"):
+			payload, _ := json.Marshal(fatFeatures())
+			_, _ = w.Write(payload)
+		case strings.HasSuffix(r.URL.Path, "/main/setInput"):
+			atomic.AddInt32(&setInputHits, 1)
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:    &config.Config{Devices: map[string]config.Device{}},
+		alias:  "test",
+		device: config.Device{Host: srv.URL, DefaultZone: "main"},
+		zone:   "main",
+		client: c,
+	}
+
+	_, err = validateInput(context.Background(), s, "typo")
+	if err == nil {
+		t.Fatal("expected ValidationError, got nil")
+	}
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %v (%T)", err, err)
+	}
+	if len(ve.Suggestions) == 0 {
+		t.Errorf("expected non-empty Suggestions, got none")
+	}
+	if got := atomic.LoadInt32(&setInputHits); got != 0 {
+		t.Errorf("setInput hits: got %d, want 0 (validation failure must not fire setInput)", got)
+	}
+}
