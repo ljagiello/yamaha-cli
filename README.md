@@ -215,11 +215,11 @@ Practical implications:
 - The CLI has no credentials to manage and writes none to disk.
 - Don't port-forward port 80 of the receiver to the public internet.
 
-## Using with AI agents (Claude Code, Anthropic API, …)
+## Run with Friday
 
-This repo ships an [Agent Skill](https://agentskills.io/specification) at `skills/yamaha-receiver-control/` so coding/automation agents can drive `yamaha` without re-deriving its surface from `--help`. The skill provides a third-person description that activates on intents like "turn the receiver on", "switch to HDMI 2", "mute the bedroom amp", plus reference files for the full command/flag matrix and config schema.
+This repo ships an [Agent Skill](https://agentskills.io/specification) at `skills/yamaha-receiver-control/` so AI agents can drive `yamaha` without re-deriving its surface from `--help`. Drop it into [Friday Studio](https://hellofriday.ai/) — the shareable AI workspace runtime from [Tempest Labs](https://hellofriday.ai/) — to get scheduling, signals, MCP tools, and memory on top of the CLI. Everything runs locally; your data stays on your machine; every step is logged.
 
-**Layout** (per the [agentskills.io spec](https://agentskills.io/specification)):
+**Layout** (per the [agentskills.io specification](https://agentskills.io/specification)):
 
 ```text
 skills/yamaha-receiver-control/
@@ -229,23 +229,22 @@ skills/yamaha-receiver-control/
     └── CONFIG.md             # config schema, resolution order, DHCP resilience
 ```
 
-**Claude Code** — install user-level (every project) or project-level (one repo):
+**Install via the Agent Skills CLI:**
 
 ```bash
-# User-level: works in any project on this machine.
-mkdir -p ~/.claude/skills
-cp -r skills/yamaha-receiver-control ~/.claude/skills/
-# Or symlink from a clone of this repo if you'd rather track upstream:
-# ln -s "$(pwd)/skills/yamaha-receiver-control" ~/.claude/skills/
-
-# Project-level: scoped to one repo.
-mkdir -p .claude/skills
-cp -r /path/to/yamaha-cli/skills/yamaha-receiver-control .claude/skills/
+npx skills add ljagiello/yamaha-cli/skills/yamaha-receiver-control
 ```
 
-After install, ask the agent in plain English (`"turn the receiver on and switch to HDMI 2"`, `"what's the volume in dB?"`, `"discover the Yamaha on my LAN and save it as 'living-room'"`) — it'll pick up the skill automatically and shell out to `yamaha` with the right flags.
+**Or in Friday Studio:**
 
-**Other runtimes** (Anthropic API Skills, custom agent frameworks): install per the [agentskills.io spec](https://agentskills.io/specification) — the skill name `yamaha-receiver-control` matches its directory name, and progressive disclosure works as designed (the metadata is ~100 tokens; `SKILL.md` body loads only when the skill activates; `references/*.md` files load only when the agent navigates to them).
+1. Install Friday from [hellofriday.ai](https://hellofriday.ai/) (macOS).
+2. Open **Skills** in the Studio sidebar and click **+ Add**.
+3. Add by reference: `ljagiello/yamaha-cli/skills/yamaha-receiver-control`.
+4. Reference it from any `workspace.yml`, or let agents load it automatically based on the skill's description.
+
+See the [Friday Skills docs](https://docs.hellofriday.ai/core-concepts/skills) for the full workflow, and the [Friday blog](https://blog.hellofriday.ai/) for the philosophy.
+
+After install, ask the agent in plain English (`"turn the receiver on and switch to HDMI 2"`, `"what's the volume in dB?"`, `"discover the Yamaha on my LAN and save it as 'living-room'"`) — it'll pick up the skill from the description and shell out to `yamaha` with the right flags. Progressive disclosure means the metadata is ~100 tokens at startup; `SKILL.md` loads only when the skill activates; `references/*.md` only when the agent navigates to them.
 
 **Prerequisite:** the agent's host needs the `yamaha` binary on `PATH` (`go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest`) and LAN access to the receiver — same as a human user.
 
