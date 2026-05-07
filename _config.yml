@@ -1,0 +1,27 @@
+title: yamaha-cli
+description: A command-line tool for controlling Yamaha YXC/MusicCast receivers over the local network.
+theme: jekyll-theme-cayman
+
+# Hide repo cruft from the published site.
+exclude:
+  - .github/
+  - .golangci.yml
+  - .goreleaser.yaml
+  - .gitignore
+  - cmd/
+  - internal/
+  - pkg/
+  - skills/
+  - testdata/
+  - go.mod
+  - go.sum
+  - LICENSE
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

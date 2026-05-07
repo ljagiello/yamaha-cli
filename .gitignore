@@ -22,6 +22,12 @@ dist/
 .envrc
 .env
 
+# Jekyll build output (the Pages workflow regenerates this in CI)
+_site/
+.jekyll-cache/
+.jekyll-metadata
+index.md
+
 # macOS / Windows clutter
 .DS_Store
 Thumbs.db
