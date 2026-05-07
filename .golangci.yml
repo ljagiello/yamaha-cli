@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - misspell
+    - nolintlint
+    - unconvert
+
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+
+  exclusions:
+    rules:
+      # Tests can be looser.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - errorlint
+          - unparam
+      # Writes to stdout/stderr legitimately ignore errors in a CLI.
+      - source: 'fmt\.(Fprint|Fprintln|Fprintf|Print|Println|Printf)\('
+        linters: [errcheck]
+      # Cobra command files generate a lot of small repetitions; keep the noise down.
+      - path: internal/cli/.*\.go
+        text: "redefines-builtin-id"
+        linters: [revive]
+      # Body.Close errcheck deferred — standard Go idiom.
+      - source: 'defer .*\.Body\.Close\(\)'
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
