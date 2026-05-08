@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/pkg/discover"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -185,6 +186,20 @@ func TestRunNetUSB_FFCtxCancelStillSendsEnd(t *testing.T) {
 	// guaranteed to be inside the timer wait when ctx is cancelled.
 	shortenSeekBracket(t, 200*time.Millisecond)
 
+	// v3-review #6: also assert the cancellation path skips
+	// runWithRediscover. Install a lookupByUDNFn counter; if rediscover
+	// fires during the cancel cleanup the count goes up. Production
+	// must call s.client.SetPlayback directly on the cancel path so
+	// SIGINT cleanup never has the side effect of persisting a
+	// rediscovered host.
+	var lookupHits atomic.Int32
+	prevLookup := lookupByUDNFn
+	lookupByUDNFn = func(ctx context.Context, udn string, timeout time.Duration) (discover.Device, error) {
+		lookupHits.Add(1)
+		return discover.Device{}, errors.New("test: lookup must not be called on cancel path")
+	}
+	t.Cleanup(func() { lookupByUDNFn = prevLookup })
+
 	var (
 		mu      sync.Mutex
 		queries []string
@@ -205,14 +220,27 @@ func TestRunNetUSB_FFCtxCancelStillSendsEnd(t *testing.T) {
 	cmd.SetOut(&strings.Builder{})
 	cmd.SetErr(&strings.Builder{})
 
-	// Kick off the bracketed seek; cancel from a sibling goroutine
-	// after the start request has had time to land but before the
-	// 200 ms bracket fires.
+	// Kick off the bracketed seek; cancel once the start request has
+	// landed (signalled by len(queries) becoming 1). Polling the
+	// counter rather than sleeping a fixed 40ms keeps the test
+	// deterministic on slow CI runners.
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.RunE(cmd, nil)
 	}()
-	time.Sleep(40 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		landed := len(queries) >= 1
+		mu.Unlock()
+		if landed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("start request did not land within 2s — production may have changed shape")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 	cancel()
 
 	if err := <-done; err != nil {
@@ -229,6 +257,10 @@ func TestRunNetUSB_FFCtxCancelStillSendsEnd(t *testing.T) {
 	}
 	if queries[1] != "playback=fast_forward_end" {
 		t.Errorf("second query: got %q, want fast_forward_end (must fire even after ctx cancel)", queries[1])
+	}
+	// And the cancel-cleanup must have skipped runWithRediscover.
+	if got := lookupHits.Load(); got != 0 {
+		t.Errorf("lookupByUDNFn calls on cancel path: got %d, want 0 (cleanup must not persist a rediscovered host)", got)
 	}
 }
 

@@ -302,7 +302,7 @@ yamaha link info                                 # show distribution state
 yamaha link dissolve                             # tear it down (defaults to active device)
 ```
 
-`link create` runs three steps in order — `setServerInfo` on the leader, `setClientInfo` on each follower, then `startDistribution` — and rolls back partial groups on failure (stopping the leader and clearing each follower's server pointer). Cycle detection refuses to enslave a follower that is already a server, and a peer cannot be both leader and follower in the same call.
+`link create` runs three steps in order — `setServerInfo` on the leader, `setClientInfo` on each follower, then `startDistribution` — and rolls back partial groups on failure (stopping the leader and clearing each follower's server pointer). The existing-membership check refuses to enslave a follower that is already a group server *or* a client of another group (dissolve the existing group first), and a peer cannot be both leader and follower in the same call. `link dissolve` mirrors this: it refuses to dissolve a target that isn't currently a server, so dissolving from a client (or unattached) device returns a clear usage error rather than issuing a no-op `setServerInfo type=remove`.
 
 ## Raw passthrough
 

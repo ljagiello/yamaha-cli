@@ -226,6 +226,23 @@ func TestNextBackoff_Caps(t *testing.T) {
 	}
 }
 
+// TestSubscribeRenewIntervalDefault pins the production default for
+// the renewal cadence to 8 minutes. The receiver expires push
+// subscriptions at ~10 minutes; a regression that shrinks the default
+// would burn unnecessary HTTP cycles, and one that grows it past 10
+// would cause silent subscription loss.
+func TestSubscribeRenewIntervalDefault(t *testing.T) {
+	if got, want := subscribeRenewIntervalDef, 8*time.Minute; got != want {
+		t.Errorf("subscribeRenewIntervalDef = %v, want %v", got, want)
+	}
+	// And the field-level default-resolution must produce the same
+	// value when Subscriber.RenewInterval is left zero.
+	var s Subscriber
+	if s.RenewInterval != 0 {
+		t.Errorf("zero-value Subscriber.RenewInterval = %v, want 0 (so default applies)", s.RenewInterval)
+	}
+}
+
 // TestSubscribe_RenewEmitsControlEvent locks two related guarantees:
 //   - Subscriber.RenewInterval is plumbed through end-to-end (the
 //     v3-review finding #10 — was a hardcoded const).
@@ -278,11 +295,11 @@ func TestSubscribe_RenewEmitsControlEvent(t *testing.T) {
 	}
 }
 
-// TestSubscribe_DropsSpoofedSource verifies that UDP packets whose
-// source IP doesn't match the registered receiver are dropped before
-// reaching the consumer channel. This closes the LAN-spoofing hole the
-// v3 review flagged (#4).
-func TestSubscribe_DropsSpoofedSource(t *testing.T) {
+// TestSubscribe_AllowsLegitimateSource verifies the filter doesn't
+// accidentally reject UDP packets from the registered receiver. Sending
+// from 127.0.0.1 against a Subscriber whose receiver is also at
+// 127.0.0.1 should surface as a normal data event.
+func TestSubscribe_AllowsLegitimateSource(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"response_code":0,"power":"on"}`))
 	}))
@@ -317,24 +334,6 @@ func TestSubscribe_DropsSpoofedSource(t *testing.T) {
 		}
 	}
 
-	// Override expected sources to allow only an unrelated address.
-	// The test client's httptest.Server lives at 127.0.0.1, so the
-	// allowed-set normally includes it; replace with a definitely-
-	// not-loopback address to force the filter to drop our packet.
-	//
-	// We can't reach the supervisor's `expected` map directly without
-	// surgery, so instead: use an httptest.Server whose host is a
-	// link-local address that we won't ever send from.
-	//
-	// (Practical workaround: trust that resolveExpectedAddrs returned
-	// {127.0.0.1} for the test server, then send from a port pretending
-	// to be 127.0.0.1 — the filter passes. The real defense here is
-	// that the production code DOES filter; the unit-level guarantee
-	// is verified by the dedicated TestResolveExpectedAddrs below.)
-
-	// Send a synthetic packet from loopback (allowed) and assert it
-	// surfaces — confirming the filter doesn't accidentally reject
-	// legitimate traffic.
 	udp, err := net.Dial("udp4", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		t.Fatalf("dial udp: %v", err)
@@ -351,6 +350,88 @@ func TestSubscribe_DropsSpoofedSource(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("legitimate packet from allowed source was dropped")
+	}
+}
+
+// TestSubscribe_DropsSpoofedSource exercises the actual drop branch of
+// the source-filter (the LAN-spoofing defense the v3-review #4 fix
+// introduced). We swap resolveExpectedAddrsFn to return a non-loopback
+// allow-set so the supervisor's filter rejects every packet our test
+// can send (which all originate from 127.0.0.1).
+//
+// Mutation test: removing the filter — `if len(expected) > 0 { ... }` —
+// from events.go::run causes this test to fail loudly.
+func TestSubscribe_DropsSpoofedSource(t *testing.T) {
+	// Force the allow-set to a definitely-not-loopback address so any
+	// packet our test sends from 127.0.0.1 fails the comparison.
+	allowed := netip.MustParseAddr("192.0.2.1") // RFC5737 TEST-NET-1
+	prev := resolveExpectedAddrsFn
+	resolveExpectedAddrsFn = func(_ *Client) map[netip.Addr]struct{} {
+		return map[netip.Addr]struct{}{allowed: {}}
+	}
+	t.Cleanup(func() { resolveExpectedAddrsFn = prev })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"response_code":0,"power":"on"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	sub := &Subscriber{
+		BackoffMin:  5 * time.Millisecond,
+		BackoffMax:  20 * time.Millisecond,
+		SilentAfter: 5 * time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := sub.Subscribe(ctx, c, []string{"main"})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// Wait for the initial subscribe control event so the bound port
+	// is known.
+	port := 0
+	deadline := time.After(2 * time.Second)
+	for port == 0 {
+		select {
+		case ev := <-ch:
+			if ev.Kind == "subscribe" {
+				port = c.eventPort
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for subscribe event")
+		}
+	}
+
+	// Send a synthetic UDP packet from 127.0.0.1. The supervisor's
+	// allow-set is {192.0.2.1}, so this packet must be dropped before
+	// reaching the consumer channel.
+	udp, err := net.Dial("udp4", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dial udp: %v", err)
+	}
+	if _, err := udp.Write([]byte(`{"main":{"volume":1}}`)); err != nil {
+		t.Fatalf("write udp: %v", err)
+	}
+	_ = udp.Close()
+
+	// Wait long enough that a legitimate packet would have arrived.
+	// Anything appearing on ch other than control events ("subscribe",
+	// "renew", "shutdown") within this window is a regression.
+	timeout := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Kind == "" {
+				t.Fatalf("spoofed packet leaked through filter: %+v", ev)
+			}
+			// Drain renew/shutdown control events; they're benign here.
+		case <-timeout:
+			return
+		}
 	}
 }
 

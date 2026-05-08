@@ -150,7 +150,10 @@ func (s *Subscriber) Subscribe(ctx context.Context, c *Client, zones []string) (
 	// the bound port could otherwise inject crafted state — this filter
 	// closes that hatch. Best-effort: if resolution fails, keep going
 	// without filtering (log via s.log so debug users notice).
-	expected := resolveExpectedAddrs(c)
+	//
+	// Indirected via a package-level var so tests can substitute a
+	// fake set without driving real DNS or rebuilding the client URL.
+	expected := resolveExpectedAddrsFn(c)
 	if len(expected) == 0 {
 		s.log("UDP source filter disabled: failed to resolve receiver host", "url", c.BaseURL())
 	}
@@ -161,6 +164,11 @@ func (s *Subscriber) Subscribe(ctx context.Context, c *Client, zones []string) (
 
 	return out, nil
 }
+
+// resolveExpectedAddrsFn is the seam Subscribe consults to learn the
+// source-IP allow-set. Tests stub it to drive the drop branch without
+// driving real DNS resolution.
+var resolveExpectedAddrsFn = resolveExpectedAddrs
 
 // resolveExpectedAddrs returns the set of source IPs we should accept
 // UDP packets from for this client. We resolve the host (which may be

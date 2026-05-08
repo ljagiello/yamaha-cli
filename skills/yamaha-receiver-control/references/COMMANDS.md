@@ -41,7 +41,7 @@ All commands accept the global flags below. Run `yamaha <cmd> --help` for cobra'
 | `netusb shuffle` / `netusb repeat` | no | Toggle shuffle / repeat mode. |
 | `preset list` | no | List NetUSB MusicCast presets (slot/input/text). |
 | `preset recall <num>` | no | Recall a NetUSB preset by 1-indexed slot. Capped against `netusb.preset.num`. |
-| `link create <leader> <follower> [<follower>...]` | no | Build a MusicCast Link group. Aliases only (config required). Cycle-checks each follower; on partial failure rolls back leader + already-set followers. |
+| `link create <leader> <follower> [<follower>...]` | no | Build a MusicCast Link group. Aliases only (config required). Existing-membership check refuses any follower already in a group (server or client); on partial failure rolls back leader + already-set followers. |
 | `link dissolve [<leader>]` | no | Tear down a MusicCast Link group. Defaults to the active device. |
 | `link info [<leader>]` | no | Print `dist/getDistributionInfo` for the device. |
 | `reboot --yes` | no | Request a system reboot. `--yes` is mandatory. Post-ack transport errors are treated as success (the receiver drops TCP mid-reboot). |

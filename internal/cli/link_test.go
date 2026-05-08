@@ -283,6 +283,41 @@ func TestLink_Dissolve(t *testing.T) {
 	}
 }
 
+// TestLink_RejectsDissolveOnClient verifies the v3-review #2 fix:
+// link dissolve refuses targets whose Role isn't "server", so dissolving
+// from a current client (or unattached device) returns a clear usage
+// error rather than issuing setServerInfo type=remove against a peer
+// that has nothing to remove.
+func TestLink_RejectsDissolveOnClient(t *testing.T) {
+	// Server stub returns role=client, group_id non-empty.
+	leader := newLinkServer(t, distRoleClient)
+	installLinkClientStub(t, map[string]*linkServer{"leader": leader})
+
+	cmd := newLinkCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"dissolve", "leader"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newLinkState(t, "leader")))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected dissolve to refuse a non-server target")
+	}
+	if got := ErrorExitCode(err); got != 2 {
+		t.Errorf("ErrorExitCode: got %d, want 2 (usage error)", got)
+	}
+	if !strings.Contains(err.Error(), "client") {
+		t.Errorf("error should mention 'client': %v", err)
+	}
+	// Only the diagnostic getDistributionInfo should fire — never
+	// setServerInfo or stopDistribution against a non-server target.
+	got := leader.Calls()
+	want := []string{"dist/getDistributionInfo"}
+	if !equalSlices(got, want) {
+		t.Errorf("calls:\n got %v\nwant %v", got, want)
+	}
+}
+
 // TestLink_Info prints the dist payload via the standard renderer; we
 // just check that the output is non-empty JSON when --output json is
 // requested.
