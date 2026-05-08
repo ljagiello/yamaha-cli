@@ -120,11 +120,33 @@ func newRootCmd() *cobra.Command {
 	// Subcommands. One file per command; each registers itself via init()
 	// would couple them to package init order — instead we register
 	// explicitly here for readability.
+	// Phase 1: core control surface.
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newPowerCmd())
 	cmd.AddCommand(newVolumeCmd())
 	cmd.AddCommand(newMuteCmd())
 	cmd.AddCommand(newInputCmd())
+
+	// Phase 2: zone & system controls.
+	cmd.AddCommand(newSoundCmd())
+	cmd.AddCommand(newDecoderCmd())
+	cmd.AddCommand(newSceneCmd())
+	cmd.AddCommand(newToneCmd())
+	cmd.AddCommand(newSleepCmd())
+	cmd.AddCommand(newRebootCmd())
+
+	// Phase 2: tuner / netusb / preset (parent commands wire their own subs).
+	cmd.AddCommand(newTunerCmd())
+	cmd.AddCommand(newNetUSBCmd())
+	cmd.AddCommand(newPresetCmd())
+
+	// Phase 3: events, multiroom, escape hatches.
+	cmd.AddCommand(newWatchCmd())
+	cmd.AddCommand(newLinkCmd())
+	cmd.AddCommand(newRawCmd())
+	cmd.AddCommand(newYncaCmd())
+
+	// Discovery, config, ergonomics.
 	cmd.AddCommand(newDiscoverCmd())
 	cmd.AddCommand(newConfigCmd())
 	cmd.AddCommand(newCompletionCmd())
