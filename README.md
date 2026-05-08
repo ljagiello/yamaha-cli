@@ -2,17 +2,21 @@
 
 A command-line tool for controlling Yamaha receivers that speak the **YamahaExtendedControl** (YXC) protocol over the local network — the same HTTP/JSON API used by the MusicCast app. Built and verified against an RX-V583, but should work with any MusicCast-capable Yamaha.
 
-Phase 1 covers the most-used remote buttons (power / volume / mute / input / status) plus SSDP discovery, multi-device config with DHCP-resilience, and machine-readable output for shell pipelines.
+Covers power, volume, mute, input, sound program, surround decoder, scene, tone, sleep, tuner (FM/AM + presets), NetUSB transport (play/pause/skip/etc.), MusicCast presets, MusicCast Link multi-room, system reboot, push events (`watch`), generic YXC passthrough (`raw`), and legacy YNCA passthrough (`ynca`). Plus SSDP discovery, multi-device config with DHCP-resilience, and machine-readable output for shell pipelines.
 
 ## Contents
 
 - [Install](#install)
 - [Quickstart](#quickstart)
-- [Commands (Phase 1)](#commands-phase-1)
+- [Commands](#commands)
 - [Configuration](#configuration)
 - [Output formats](#output-formats)
 - [Exit codes](#exit-codes)
 - [Zone scope](#zone-scope)
+- [Watch](#watch)
+- [MusicCast Link](#musiccast-link)
+- [Raw passthrough](#raw-passthrough)
+- [YNCA passthrough](#ynca-passthrough)
 - [DHCP resilience](#dhcp-resilience)
 - [Debugging](#debugging)
 - [Security note](#security-note)
@@ -55,14 +59,48 @@ Non-interactive (CI, scripts) — pass `--host` or set `YAMAHA_HOST`:
 YAMAHA_HOST=192.168.1.116 yamaha status
 ```
 
-## Commands (Phase 1)
+## Commands
 
 ```text
-yamaha status                                # zone power/input/volume/mute
+# Zone-scoped (default zone from config, or main):
+yamaha status                                # zone power/input/volume/mute/sound_program
 yamaha power on|off|toggle [--no-wait]
 yamaha volume <int|±N|up|down> [--db|--percent|--step N]
 yamaha mute on|off|toggle
 yamaha input <name>                          # validated against device features
+yamaha sound <program>                       # DSP sound program; validated against features
+yamaha decoder <type>                        # surround decoder type; validated
+yamaha scene <1..N>                          # recall a scene (N from features)
+yamaha tone bass <-12..+12> | tone treble <-12..+12> | tone reset
+yamaha sleep 0|30|60|90|120|off              # sleep timer in minutes
+
+# NetUSB / MusicCast playback engine:
+yamaha netusb info                           # now-playing payload
+yamaha netusb play|pause|stop|toggle
+yamaha netusb next|prev|ff|rew
+yamaha netusb shuffle | netusb repeat        # toggles
+yamaha preset list                           # NetUSB MusicCast presets
+yamaha preset recall <num>
+
+# Tuner:
+yamaha tuner status
+yamaha tuner fm <MHz>                        # e.g. 102.5
+yamaha tuner am <kHz>                        # e.g. 1530
+yamaha tuner preset <num> [--band fm|am]
+yamaha tuner presets [--band fm|am]
+
+# Multi-room (MusicCast Link):
+yamaha link create <leader> <follower> [<follower>...]
+yamaha link dissolve [<leader>]
+yamaha link info [<leader>]
+
+# System / events / passthroughs:
+yamaha reboot --yes                          # always requires --yes
+yamaha watch [--device a,b,c]                # NDJSON push events
+yamaha raw <method> [k=v ...]                # generic YXC GET passthrough
+yamaha ynca <line>                           # TCP/50000 YNCA passthrough
+
+# Discovery & config:
 yamaha discover [--add]                      # SSDP scan; --add saves to config
 yamaha config show                           # print loaded config
 yamaha config path                           # print config file path
@@ -86,6 +124,46 @@ yamaha volume 50 --percent                   # absolute, 0..100 scaled to device
 
 # Power on then switch input — no manual sleep needed; power on polls until ready.
 yamaha power on && yamaha input hdmi2 && yamaha volume 50
+
+# Sound program / surround decoder / scene / tone.
+yamaha sound straight
+yamaha decoder dolby_surround
+yamaha scene 2
+yamaha tone bass +3
+yamaha tone reset
+yamaha sleep 60                              # auto-off in 60 min
+
+# Tuner: FM/AM, recall a preset, list presets.
+yamaha tuner fm 102.5
+yamaha tuner am 1530
+yamaha tuner preset 7 --band fm
+yamaha tuner presets --band fm | jq
+
+# NetUSB transport + now-playing.
+yamaha netusb play
+yamaha netusb info
+yamaha netusb ff
+yamaha preset recall 3                       # MusicCast preset
+
+# Push events — NDJSON, auto-reconnect with backoff, SIGINT clean-shutdown.
+yamaha watch | jq 'select(.delta.main.volume)'
+yamaha watch --device living-room,bedroom
+
+# MusicCast Link: group two receivers, then dissolve.
+yamaha link create living-room bedroom
+yamaha link info
+yamaha link dissolve
+
+# Generic YXC passthrough — covers the ~184 endpoints in the public spec.
+yamaha raw system/setPartyMode enable=true
+yamaha raw netusb/setPlaybackMode mode=repeat type=track
+
+# YNCA passthrough — legacy line protocol on TCP/50000.
+yamaha ynca @MAIN:VOL=?
+yamaha ynca @SYS:MODELNAME=?
+
+# System reboot — always requires --yes.
+yamaha reboot --yes
 
 # Talk to a second receiver without changing the default.
 yamaha --device bedroom mute on
@@ -185,12 +263,69 @@ Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--o
 | `volume` | yes |
 | `mute` | yes |
 | `input` | yes |
+| `sound` | yes |
+| `decoder` | yes |
+| `scene` | yes |
+| `tone` | yes |
+| `sleep` | yes |
+| `tuner *` | no (tuner is system-wide) |
+| `netusb *` | no |
+| `preset list` / `preset recall` | no |
+| `watch` | no |
+| `link create` / `link dissolve` / `link info` | no |
+| `reboot` | no (system-wide; `--zone` is ignored) |
+| `raw` | no (caller supplies the method path) |
+| `ynca` | no |
 | `discover` | no |
 | `config show` / `config path` | no |
 | `completion` | no |
 | `version` | no |
 
-Phase 2 will add more zone-scoped commands (`sound`, `decoder`, `scene`, `tone`, `sleep`); see Roadmap.
+## Watch
+
+`yamaha watch` subscribes to the receiver's UDP push channel and emits one event per line. Default output is NDJSON; in table mode each event renders as one or more `HH:MM:SS  alias  zone.field = value` lines.
+
+```json
+{"ts":"2026-05-07T18:42:01.123Z","device":"living-room","delta":{"main":{"volume":62}}}
+{"ts":"2026-05-07T18:42:01.456Z","device":"living-room","event":"reconnect","reason":"udp: silent for 30s"}
+```
+
+`--device a,b,c` watches multiple aliases concurrently; events from each are tagged with the alias. The subscriber auto-reconnects with exponential backoff (1 s → 60 s) when the receiver goes silent for 30 s, emitting a `reconnect` control event each time. SIGINT triggers a clean shutdown — the channel closes, in-flight goroutines drain, and the command exits 0.
+
+## MusicCast Link
+
+`yamaha link` wraps the `dist/*` YXC endpoints to drive multi-room audio. One device is the **leader** (server); one or more **followers** (clients) sync to it. All peers must be aliases in the config.
+
+```bash
+yamaha link create living-room bedroom kitchen   # leader, followers...
+yamaha link info                                 # show distribution state
+yamaha link dissolve                             # tear it down (defaults to active device)
+```
+
+`link create` runs three steps in order — `setServerInfo` on the leader, `setClientInfo` on each follower, then `startDistribution` — and rolls back partial groups on failure (stopping the leader and clearing each follower's server pointer). Cycle detection refuses to enslave a follower that is already a server, and a peer cannot be both leader and follower in the same call.
+
+## Raw passthrough
+
+`yamaha raw <method> [k=v ...]` is the escape hatch for endpoints not yet wrapped by a typed command. The method argument is the YXC path (e.g. `system/setPartyMode`, `netusb/setPlaybackMode`); subsequent positional `k=v` pairs are url-encoded into the query string. Repeated keys append, matching how the receiver expects array params (`client_list[0].ip_address=…`). The reply is rendered through the standard `--output` formatter.
+
+```bash
+yamaha raw system/getDeviceInfo
+yamaha raw main/setVolume volume=42
+yamaha raw netusb/setPlaybackMode mode=repeat type=track
+```
+
+This covers the ~184 endpoints in the YXC public spec — party mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, alarms, and so on.
+
+## YNCA passthrough
+
+`yamaha ynca <line>` speaks the legacy line-based YNCA protocol on TCP/50000, used by classic AVR firmware (RX-V583 included). It's useful when YXC doesn't expose a particular control. The leading `@` is optional; the receiver's reply line is printed verbatim.
+
+```bash
+yamaha ynca @MAIN:VOL=?
+yamaha ynca @SYS:MODELNAME=?
+```
+
+A capability probe runs once per invocation. Devices that don't speak YNCA fail fast with exit 70 (`device does not support YNCA`) instead of a vague timeout.
 
 ## DHCP resilience
 
@@ -229,7 +364,7 @@ Practical implications:
 
 - Anyone on the same L2 segment can issue the same commands. Don't expose the receiver to untrusted networks.
 - The CLI has no credentials to manage and writes none to disk.
-- Don't port-forward port 80 of the receiver to the public internet.
+- Don't port-forward port 80 (or TCP/50000 for YNCA) of the receiver to the public internet.
 
 ## Run with Friday
 
@@ -266,10 +401,12 @@ After install, ask the agent in plain English (`"turn the receiver on and switch
 
 ## Roadmap
 
-Phase 1 (this README) is the MVP. Phases 2 and 3 are deferred:
+The Phase 1 / 2 / 3 surface (every command in this README) is implemented and verified against an RX-V583. The original "184 bonus endpoints" from the YXC public spec — party mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, Cinema-Caster, alarms, Sonos integration — are reachable through `yamaha raw <method>` without further code.
 
-- **Phase 2** — full surface: `sound`, `decoder`, `scene`, `tone`, `sleep`, `tuner`, `netusb`, `preset`, `link`, `reboot`. Same conventions as Phase 1.
-- **Phase 3** — `watch` (UDP event subscription), MusicCast Link (multi-room grouping), and `raw <method> [key=value …]` — a generic YXC GET passthrough that exposes all 184 endpoints from the public spec (party mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, CCS, alarms, Sonos integration). Anything not yet typed is reachable from day one once `raw` lands.
+What's still on the table:
+
+- Typed wrappers for the bonus endpoints (`yamaha bluetooth list`, `yamaha ypao status`, etc.) where there's a concrete use case.
+- Live integration tests against non-RX-V receivers.
 
 ## Contributing & License
 
