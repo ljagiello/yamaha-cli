@@ -128,8 +128,8 @@ A JSON array of per-row objects. `tuner presets`:
 
 ```json
 [
-  {"band": "FM", "num": 1, "freq": 8930,  "freq_human": "89.30 MHz"},
-  {"band": "FM", "num": 2, "freq": 10210, "freq_human": "102.10 MHz"}
+  {"band": "FM", "num": 1, "freq": 89300,  "freq_human": "89.30 MHz"},
+  {"band": "FM", "num": 2, "freq": 102100, "freq_human": "102.10 MHz"}
 ]
 ```
 
