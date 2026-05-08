@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -282,7 +283,9 @@ func TestWatch_TableMode(t *testing.T) {
 }
 
 // TestWatch_CleanShutdown asserts that cancelling the context drains
-// the channel and Execute returns nil (exit 0) cleanly.
+// the channel and Execute returns nil (exit 0) cleanly. Also verifies
+// (v3-review #12) that the final NDJSON line on stdout is the
+// "shutdown" control event so consumers can detect graceful exit.
 func TestWatch_CleanShutdown(t *testing.T) {
 	shrinkWatchTimers(t)
 
@@ -313,6 +316,126 @@ func TestWatch_CleanShutdown(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("watch did not exit within 3s of cancel")
+	}
+
+	// Stdout must include a `{"event":"shutdown",...}` NDJSON line so
+	// downstream tooling can distinguish a graceful exit from the
+	// connection silently dying.
+	out := stdout.String()
+	if !strings.Contains(out, `"event":"shutdown"`) {
+		t.Errorf("stdout missing shutdown control event:\n%s", out)
+	}
+}
+
+// TestWatch_MultiDeviceFanOut exercises `watch --device a,b` end to
+// end (v3-review #5). Each alias gets its own subscribe server +
+// distinct UDP packet; both alias names must appear in the
+// mutex-serialised NDJSON output. Catches output-mutex contention and
+// goroutine deadlocks under -race.
+func TestWatch_MultiDeviceFanOut(t *testing.T) {
+	shrinkWatchTimers(t)
+
+	srvA := newCaptureSubscribeServer(t)
+	srvB := newCaptureSubscribeServer(t)
+
+	uA, _ := url.Parse(srvA.srv.URL)
+	uB, _ := url.Parse(srvB.srv.URL)
+
+	cfg := &config.Config{
+		Devices: map[string]config.Device{
+			"a": {Host: uA.Host, DefaultZone: "main"},
+			"b": {Host: uB.Host, DefaultZone: "main"},
+		},
+	}
+	// active device doesn't matter for --device; populate something
+	// reasonable so newRootStateLoader-style code paths don't trip.
+	s := &state{
+		cfg:    cfg,
+		alias:  "a",
+		device: cfg.Devices["a"],
+		zone:   "main",
+	}
+	// active client unused by the fan-out path but required to be
+	// non-nil for the state.
+	c, err := yxc.New(uA.Host)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s.client = c
+
+	cmd := newWatchCmd()
+	r, w := io.Pipe()
+	cmd.SetOut(w)
+	cmd.SetErr(io.Discard)
+	cmd.PersistentFlags().String("output", "json", "")
+	cmd.SetArgs([]string{"--device", "a,b"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	cmd.SetContext(context.WithValue(ctx, stateKey, s))
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Execute() }()
+
+	portA := srvA.awaitPort(t)
+	portB := srvB.awaitPort(t)
+
+	// Send distinct UDP packets to each subscriber's bound port.
+	sendUDP := func(port int, payload string) {
+		t.Helper()
+		conn, err := net.Dial("udp4", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			t.Fatalf("dial udp: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.Write([]byte(payload)); err != nil {
+			t.Fatalf("write udp: %v", err)
+		}
+	}
+	sendUDP(portA, `{"main":{"volume":11}}`)
+	sendUDP(portB, `{"main":{"volume":22}}`)
+
+	// Read stdout until both alias lines arrive (or timeout).
+	scanner := bufio.NewScanner(r)
+	type seen struct{ a, b bool }
+	got := seen{}
+	deadline := time.After(3 * time.Second)
+	go func() {
+		for !got.a || !got.b {
+			select {
+			case <-deadline:
+				return
+			default:
+			}
+			if !scanner.Scan() {
+				return
+			}
+			line := scanner.Bytes()
+			var ev map[string]any
+			if err := json.Unmarshal(line, &ev); err != nil {
+				continue
+			}
+			switch ev["device"] {
+			case "a":
+				got.a = true
+			case "b":
+				got.b = true
+			}
+		}
+		cancel()
+		_ = w.Close()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cancel()
+		_ = w.Close()
+		t.Fatal("watch did not exit within 5s")
+	}
+
+	if !got.a || !got.b {
+		t.Errorf("did not see both devices in NDJSON: a=%v b=%v", got.a, got.b)
 	}
 }
 

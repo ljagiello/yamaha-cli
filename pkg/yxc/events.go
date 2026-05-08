@@ -35,14 +35,15 @@ type Event struct {
 	Err error
 }
 
-// Default Subscriber timing constants.
+// Default Subscriber timing values. The user-tunable ones are exposed
+// via Subscriber fields; the rest stay as package constants.
 const (
-	subscribeRenewInterval = 8 * time.Minute
-	subscribeBackoffMinDef = 1 * time.Second
-	subscribeBackoffMaxDef = 60 * time.Second
-	subscribeSilentAfter   = 30 * time.Second
-	// readDeadline bounds how long PacketConn.ReadFrom blocks before
-	// returning so the loop can check ctx and silence.
+	subscribeRenewIntervalDef = 8 * time.Minute
+	subscribeBackoffMinDef    = 1 * time.Second
+	subscribeBackoffMaxDef    = 60 * time.Second
+	subscribeSilentAfter      = 30 * time.Second
+	// subscribeReadDeadline bounds how long PacketConn.ReadFrom blocks
+	// before returning so the loop can check ctx and silence.
 	subscribeReadDeadline = 500 * time.Millisecond
 )
 
@@ -60,6 +61,11 @@ type Subscriber struct {
 	// subscription is considered dead and reconnect is triggered.
 	// Default: 30s.
 	SilentAfter time.Duration
+	// RenewInterval is how often the subscriber re-issues the
+	// subscription HTTP call to refresh the receiver's event registration.
+	// The receiver expires registrations at ~10 min, so anything
+	// noticeably less is fine. Default: 8 min.
+	RenewInterval time.Duration
 }
 
 // Subscribe binds a UDP socket on 127.0.0.1, registers the event
@@ -117,6 +123,10 @@ func (s *Subscriber) Subscribe(ctx context.Context, c *Client, zones []string) (
 	if silentAfter <= 0 {
 		silentAfter = subscribeSilentAfter
 	}
+	renewInterval := s.RenewInterval
+	if renewInterval <= 0 {
+		renewInterval = subscribeRenewIntervalDef
+	}
 
 	// Bind a UDP socket. We bind on 0.0.0.0 so the receiver can reach
 	// us regardless of which local interface the request originated on.
@@ -135,20 +145,60 @@ func (s *Subscriber) Subscribe(ctx context.Context, c *Client, zones []string) (
 	c.eventPort = udpAddr.Port
 	c.mu.Unlock()
 
+	// Resolve the receiver's host once so the reader can drop UDP
+	// packets that don't originate from it. A LAN attacker who knows
+	// the bound port could otherwise inject crafted state — this filter
+	// closes that hatch. Best-effort: if resolution fails, keep going
+	// without filtering (log via s.log so debug users notice).
+	expected := resolveExpectedAddrs(c)
+	if len(expected) == 0 {
+		s.log("UDP source filter disabled: failed to resolve receiver host", "url", c.BaseURL())
+	}
+
 	out := make(chan Event, 32)
 
-	go s.run(ctx, c, pc, zones, backoffMin, backoffMax, silentAfter, out)
+	go s.run(ctx, c, pc, zones, backoffMin, backoffMax, silentAfter, renewInterval, expected, out)
 
 	return out, nil
 }
 
+// resolveExpectedAddrs returns the set of source IPs we should accept
+// UDP packets from for this client. We resolve the host (which may be
+// a hostname or a literal IP) at subscribe time. An empty set means
+// "no filtering"; the reader will accept any source.
+func resolveExpectedAddrs(c *Client) map[netip.Addr]struct{} {
+	host := c.baseURL.Hostname()
+	if host == "" {
+		return nil
+	}
+	if a, err := netip.ParseAddr(host); err == nil {
+		return map[netip.Addr]struct{}{a.Unmap(): {}}
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+	out := make(map[netip.Addr]struct{}, len(ips))
+	for _, ip := range ips {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			out[a.Unmap()] = struct{}{}
+		}
+	}
+	return out
+}
+
 // run is the main subscription pump. It owns pc and closes it on exit.
+//
+// expected is the set of source IPs the receiver is allowed to send
+// from. An empty set disables filtering (e.g. when host resolution
+// failed at subscribe time).
 func (s *Subscriber) run(
 	ctx context.Context,
 	c *Client,
 	pc net.PacketConn,
 	zones []string,
-	backoffMin, backoffMax, silentAfter time.Duration,
+	backoffMin, backoffMax, silentAfter, renewInterval time.Duration,
+	expected map[netip.Addr]struct{},
 	out chan<- Event,
 ) {
 	defer close(out)
@@ -229,7 +279,7 @@ func (s *Subscriber) run(
 	backoff = backoffMin
 
 	// Steady-state loop.
-	renewT := time.NewTicker(subscribeRenewInterval)
+	renewT := time.NewTicker(renewInterval)
 	defer renewT.Stop()
 	silenceT := time.NewTimer(silentAfter)
 	defer silenceT.Stop()
@@ -264,6 +314,19 @@ func (s *Subscriber) run(
 				readerWG.Wait()
 				return
 			}
+			// Drop packets whose source isn't the registered receiver.
+			// Without this filter, any LAN host can craft a UDP packet
+			// to our bound port and the CLI would surface it as device
+			// state. Best-effort: empty `expected` (resolution failed)
+			// disables filtering, in which case we accept anything and
+			// expose `From` in the event so consumers can validate.
+			if len(expected) > 0 {
+				if _, ok := expected[p.from.Addr()]; !ok {
+					s.log("dropped packet from unexpected source",
+						"from", p.from.String())
+					continue
+				}
+			}
 			resetSilence()
 			s.emit(ctx, out, &Event{Raw: json.RawMessage(p.data), From: p.from})
 
@@ -276,7 +339,14 @@ func (s *Subscriber) run(
 					return
 				}
 				resetSilence()
+				continue
 			}
+			// Renewal succeeded. Emit a "renew" control event so
+			// consumers can distinguish a periodic renewal from the
+			// initial bind ("subscribe") and from recovery
+			// ("reconnect"). Kind is set to "renew"; otherwise the
+			// event carries no payload.
+			s.emit(ctx, out, &Event{Kind: "renew"})
 
 		case <-silenceT.C:
 			err := fmt.Errorf("yxc: no events for %s", silentAfter)

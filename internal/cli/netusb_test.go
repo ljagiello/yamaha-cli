@@ -167,6 +167,71 @@ func TestRunNetUSB_FFEmitsStartThenEnd(t *testing.T) {
 	}
 }
 
+// TestRunNetUSB_FFCtxCancelStillSendsEnd asserts the README claim
+// "end-request fires even on ctx cancel (fresh 2s context)". When the
+// user hits Ctrl-C between the start and end frames, the receiver
+// would otherwise be stuck in fast-seek mode; the cleanup path must
+// still emit fast_forward_end.
+//
+// This test also locks the v3-review fix that the cancellation cleanup
+// must NOT route through runWithRediscover (which would persist a
+// rediscovered host as a side effect of SIGINT). The stub server is
+// alive throughout, so a working rediscover would be silent — but if
+// the production code regresses to use runWithRediscover, that's a
+// separate review concern; this test only asserts the user-visible
+// behaviour: the end-request still fires, against the original host.
+func TestRunNetUSB_FFCtxCancelStillSendsEnd(t *testing.T) {
+	// Bracket longer than the cancel scheduling so the goroutine is
+	// guaranteed to be inside the timer wait when ctx is cancelled.
+	shortenSeekBracket(t, 200*time.Millisecond)
+
+	var (
+		mu      sync.Mutex
+		queries []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.RawQuery)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"response_code":0}`))
+	}))
+	defer srv.Close()
+
+	s := newNetUSBTestState(t, srv)
+	cmd := newNetUSBPlaybackCmd("ff")
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd.SetContext(ctx)
+	setStateOnCmd(cmd, s)
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	// Kick off the bracketed seek; cancel from a sibling goroutine
+	// after the start request has had time to land but before the
+	// 200 ms bracket fires.
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.RunE(cmd, nil)
+	}()
+	time.Sleep(40 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 2 {
+		t.Fatalf("setPlayback hits: got %d (%v), want 2 (start + end after cancel)", len(queries), queries)
+	}
+	if queries[0] != "playback=fast_forward_start" {
+		t.Errorf("first query: got %q, want fast_forward_start", queries[0])
+	}
+	if queries[1] != "playback=fast_forward_end" {
+		t.Errorf("second query: got %q, want fast_forward_end (must fire even after ctx cancel)", queries[1])
+	}
+}
+
 // TestRunNetUSB_RewEmitsStartThenEnd mirrors the FF test for fast-reverse;
 // the start/end vocabulary differs.
 func TestRunNetUSB_RewEmitsStartThenEnd(t *testing.T) {

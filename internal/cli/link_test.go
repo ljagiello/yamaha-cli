@@ -22,8 +22,13 @@ import (
 const distRoleNone = `{"response_code":0,"role":"none"}`
 
 // distRoleServer simulates a device that is already a server in some
-// other group. Used to exercise the cycle-detection path.
+// other group. Used to exercise the existing-membership check.
 const distRoleServer = `{"response_code":0,"role":"server","group_id":"existing"}`
+
+// distRoleClient simulates a device that is already a client of some
+// other group's server. The link create command must refuse to re-point
+// it; otherwise the original leader's client_list goes stale.
+const distRoleClient = `{"response_code":0,"role":"client","group_id":"existing"}`
 
 // linkServer wraps an httptest.Server with a thread-safe call log.
 // Every YXC method seen on the wire is appended to calls; tests assert
@@ -107,15 +112,6 @@ func newLinkState(t *testing.T, aliases ...string) *state {
 		}
 	}
 	return &state{cfg: cfg}
-}
-
-func runLinkCmd(t *testing.T, args ...string) error {
-	t.Helper()
-	cmd := newLinkCmd()
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs(args)
-	return cmd.Execute()
 }
 
 // TestLink_CreateCallSequence verifies the orchestration order:
@@ -242,18 +238,18 @@ func TestLink_CreateCycleDetected(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected cycle-detection error")
+		t.Fatal("expected existing-server-rejection error")
 	}
 	if got := ErrorExitCode(err); got != 2 {
 		t.Errorf("exit code: got %d want 2", got)
 	}
-	if !strings.Contains(err.Error(), "cycle") {
-		t.Errorf("error should mention cycle: %v", err)
+	if !strings.Contains(err.Error(), "server") {
+		t.Errorf("error should mention 'server': %v", err)
 	}
 
 	// Leader should not have been touched at all.
 	if calls := leader.Calls(); len(calls) != 0 {
-		t.Errorf("leader should not be touched on cycle detection, got %v", calls)
+		t.Errorf("leader should not be touched on existing-membership rejection, got %v", calls)
 	}
 }
 
@@ -316,19 +312,70 @@ func TestLink_Info(t *testing.T) {
 }
 
 // TestLink_RejectsLeaderAsFollower refuses leader and follower being
-// the same alias.
+// the same alias. Verifies (a) the command returns *usageError, (b)
+// no wire calls are made (we never reach a server), and (c) the error
+// message identifies the cause.
 func TestLink_RejectsLeaderAsFollower(t *testing.T) {
-	installLinkClientStub(t, map[string]*linkServer{})
-	err := runLinkCmd(t, "create", "leader", "leader")
+	leader := newLinkServer(t, distRoleNone)
+	installLinkClientStub(t, map[string]*linkServer{
+		"leader": leader,
+	})
+
+	cmd := newLinkCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"create", "leader", "leader"})
+
+	s := newLinkState(t, "leader")
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, s))
+
+	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected error, got nil")
 	}
-	if got := ErrorExitCode(err); got != 1 {
-		// Cobra surfaces this as a regular error since state is nil; it
-		// triggers the "no state on context" path. Either 1 or 2 is
-		// acceptable but we expect 1 here because the path runs before
-		// usage validation. Just assert it's an error.
-		_ = got
+	if got := ErrorExitCode(err); got != 2 {
+		t.Errorf("ErrorExitCode: got %d, want 2 (usage error)", got)
+	}
+	if !strings.Contains(err.Error(), "leader") || !strings.Contains(err.Error(), "follower") {
+		t.Errorf("error message missing leader/follower context: %v", err)
+	}
+	if calls := leader.Calls(); len(calls) != 0 {
+		t.Errorf("expected zero wire calls, got %v", calls)
+	}
+}
+
+// TestLink_RejectsExistingClientFollower extends the existing-membership
+// check (#1 from the v3 review): a follower currently a CLIENT in
+// another group must be rejected, not silently re-pointed.
+func TestLink_RejectsExistingClientFollower(t *testing.T) {
+	leader := newLinkServer(t, distRoleNone)
+	follower := newLinkServer(t, distRoleClient) // already a client in some other group
+	installLinkClientStub(t, map[string]*linkServer{
+		"leader":   leader,
+		"follower": follower,
+	})
+
+	cmd := newLinkCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"create", "leader", "follower"})
+
+	s := newLinkState(t, "leader", "follower")
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, s))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := ErrorExitCode(err); got != 2 {
+		t.Errorf("ErrorExitCode: got %d, want 2", got)
+	}
+	if !strings.Contains(err.Error(), "client") {
+		t.Errorf("error message missing client context: %v", err)
+	}
+	// Leader must not have been touched (the role check runs first).
+	if calls := leader.Calls(); len(calls) != 0 {
+		t.Errorf("leader: expected zero calls, got %v", calls)
 	}
 }
 

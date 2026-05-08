@@ -179,15 +179,17 @@ func runFastSeek(ctx context.Context, s *state, start, end yxc.Playback) error {
 	}
 
 	// Use a fresh context for the end-call when the parent was cancelled,
-	// so we still have a chance to leave the receiver in a sane state.
-	endCtx := ctx
+	// so we still have a chance to leave the receiver in a sane state. In
+	// the cancellation path we skip runWithRediscover entirely: a SIGINT
+	// cleanup must not have the side effect of persisting a rediscovered
+	// host to the user's config.
 	if ctx.Err() != nil {
-		var cancel context.CancelFunc
-		endCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		endCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
+		return s.client.SetPlayback(endCtx, end)
 	}
-	return runWithRediscover(endCtx, s, func(c *yxc.Client) error {
-		return c.SetPlayback(endCtx, end)
+	return runWithRediscover(ctx, s, func(c *yxc.Client) error {
+		return c.SetPlayback(ctx, end)
 	})
 }
 

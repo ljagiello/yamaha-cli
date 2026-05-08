@@ -89,15 +89,24 @@ func newLinkCreateCmd() *cobra.Command {
 				return err
 			}
 
-			// Cycle / role check: refuse to enslave a follower that is
-			// already serving its own group.
+			// Existing-membership check: refuse to enslave a follower that is
+			// already part of any group, server or client. Re-pointing a
+			// current client silently would leave the old leader's
+			// client_list stale; demanding the user dissolve first keeps
+			// the receiver-side state consistent.
+			//
+			// This is a single-hop check (we don't traverse the graph),
+			// which is sufficient for the loops users actually create.
 			for _, f := range followers {
 				di, derr := f.client.GetDistributionInfo(ctx)
 				if derr != nil {
 					return fmt.Errorf("link create: %s: getDistributionInfo: %w", f.alias, derr)
 				}
-				if di.Role == "server" {
-					return newUsageError("link create: %q is already a group server (cycle)", f.alias)
+				switch di.Role {
+				case "server":
+					return newUsageError("link create: %q is already a group server; dissolve it first", f.alias)
+				case "client":
+					return newUsageError("link create: %q is already a group client (group_id=%s); dissolve the existing group first", f.alias, di.GroupID)
 				}
 			}
 
@@ -111,46 +120,60 @@ func newLinkCreateCmd() *cobra.Command {
 				ipList = append(ipList, f.host())
 			}
 
-			rollback := func(reason error) error {
-				logLinkRollback(s.debug, reason)
-				if e := leader.client.StopDistribution(ctx); e != nil {
-					logLinkRollbackStep(s.debug, "stopDistribution", leader.alias, e)
-				}
-				for _, f := range followers {
-					// Use Do directly: SetClientInfo refuses empty
-					// serverIP, but the rollback's purpose is precisely
-					// to clear the follower's server pointer.
-					v := url.Values{}
-					v.Set("group_id", groupID)
-					v.Set("zone", f.zone)
-					v.Set("server_ip_address", "")
-					if _, e := f.client.Do(ctx, "dist/setClientInfo", v); e != nil {
-						logLinkRollbackStep(s.debug, "setClientInfo(reset)", f.alias, e)
+			// rollbackPartial returns a closure that resets only the
+			// followers we already confirmed had setClientInfo applied,
+			// plus stops distribution on the leader. Best-effort: errors
+			// are logged via --debug and swallowed so a single failed
+			// rollback step doesn't mask the original cause.
+			rollbackPartial := func(toReset []linkPeer) func(error) error {
+				return func(reason error) error {
+					logLinkRollback(s.debug, reason)
+					if e := leader.client.StopDistribution(ctx); e != nil {
+						logLinkRollbackStep(s.debug, "stopDistribution", leader.alias, e)
 					}
+					for _, f := range toReset {
+						// SetClientInfo refuses empty serverIP, but the
+						// rollback's purpose is precisely to clear the
+						// follower's server pointer — so use Do directly.
+						v := url.Values{}
+						v.Set("group_id", groupID)
+						v.Set("zone", f.zone)
+						v.Set("server_ip_address", "")
+						if _, e := f.client.Do(ctx, "dist/setClientInfo", v); e != nil {
+							logLinkRollbackStep(s.debug, "setClientInfo(reset)", f.alias, e)
+						}
+					}
+					return reason
 				}
-				return reason
 			}
 
-			// Step 1: tell the leader who its clients are.
+			// Step 1: tell the leader who its clients are. No followers
+			// have been touched yet, so rollback is a no-op for them
+			// (rollbackPartial(nil) only stops the leader).
 			if err := leader.client.SetServerInfo(ctx, yxc.ServerInfo{
 				GroupID:    groupID,
 				Type:       "add",
 				Zone:       leader.zone,
 				ClientList: ipList,
 			}); err != nil {
-				return rollback(fmt.Errorf("setServerInfo on %q: %w", leader.alias, err))
+				return rollbackPartial(nil)(fmt.Errorf("setServerInfo on %q: %w", leader.alias, err))
 			}
 
-			// Step 2: tell each follower its server.
+			// Step 2: tell each follower its server. Track which followers
+			// actually got setClientInfo so a partial-failure rollback
+			// only resets the ones that need it.
+			confirmed := make([]linkPeer, 0, len(followers))
 			for _, f := range followers {
 				if err := f.client.SetClientInfo(ctx, groupID, f.zone, leader.host()); err != nil {
-					return rollback(fmt.Errorf("setClientInfo on %q: %w", f.alias, err))
+					return rollbackPartial(confirmed)(fmt.Errorf("setClientInfo on %q: %w", f.alias, err))
 				}
+				confirmed = append(confirmed, f)
 			}
 
-			// Step 3: kick off the actual stream.
+			// Step 3: kick off the actual stream. By this point all
+			// followers got setClientInfo, so rollback covers the full set.
 			if err := leader.client.StartDistribution(ctx, 0); err != nil {
-				return rollback(fmt.Errorf("startDistribution on %q: %w", leader.alias, err))
+				return rollbackPartial(followers)(fmt.Errorf("startDistribution on %q: %w", leader.alias, err))
 			}
 
 			payload := map[string]any{
@@ -186,7 +209,14 @@ func newLinkDissolveCmd() *cobra.Command {
 				return fmt.Errorf("link dissolve: getDistributionInfo: %w", err)
 			}
 			if di.GroupID == "" {
-				return newUsageError("link dissolve: %q is not currently a group server", leader.alias)
+				return newUsageError("link dissolve: %q is not part of any MusicCast Link group", leader.alias)
+			}
+			// Refuse to dissolve a *client* — that would issue
+			// setServerInfo type=remove + stopDistribution against a
+			// device that has no server role. Tell the user to dissolve
+			// from the actual leader instead.
+			if di.Role != "server" {
+				return newUsageError("link dissolve: %q is a group %s (group_id=%s), not the server; dissolve from the leader instead", leader.alias, di.Role, di.GroupID)
 			}
 
 			if err := leader.client.SetServerInfo(ctx, yxc.ServerInfo{
@@ -248,8 +278,8 @@ func newLinkInfoCmd() *cobra.Command {
 // from the user's positional aliases. All aliases must exist in the
 // loaded config.
 func resolveLinkPeers(s *state, leaderAlias string, followerAliases []string) (linkPeer, []linkPeer, error) {
-	if s.cfg == nil {
-		return linkPeer{}, nil, newUsageError("link: requires a config file with named aliases")
+	if s.cfg == nil || len(s.cfg.Devices) == 0 {
+		return linkPeer{}, nil, newUsageError("link: requires a config file with named aliases (run `yamaha discover --add` first)")
 	}
 	leader, err := buildLinkPeer(s, leaderAlias)
 	if err != nil {
@@ -287,8 +317,8 @@ func resolveLinkLeader(s *state, args []string) (linkPeer, error) {
 			client: s.client,
 		}, nil
 	}
-	if s.cfg == nil {
-		return linkPeer{}, newUsageError("link: alias %q given but no config is loaded", args[0])
+	if s.cfg == nil || len(s.cfg.Devices) == 0 {
+		return linkPeer{}, newUsageError("link: alias %q given but no devices are configured", args[0])
 	}
 	return buildLinkPeer(s, args[0])
 }

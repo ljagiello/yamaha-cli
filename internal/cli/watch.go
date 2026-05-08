@@ -120,8 +120,8 @@ func resolveWatchDevices(cmd *cobra.Command, s *state) ([]watchDevice, error) {
 		return []watchDevice{{alias: alias, host: s.device.Host, client: s.client}}, nil
 	}
 
-	if s.cfg == nil {
-		return nil, newUsageError("watch: --device requires a config file with named aliases")
+	if s.cfg == nil || len(s.cfg.Devices) == 0 {
+		return nil, newUsageError("watch: --device requires named aliases in your config (run `yamaha discover --add` first)")
 	}
 	aliases := splitCSV(devFlag)
 	if len(aliases) == 0 {
