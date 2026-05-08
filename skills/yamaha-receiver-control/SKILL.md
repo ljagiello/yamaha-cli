@@ -1,6 +1,6 @@
 ---
 name: yamaha-receiver-control
-description: Controls Yamaha AV receivers (RX-V/RX-A series, MusicCast-capable) over the local network via the yamaha-cli command-line tool. Use when the user asks to power on/off the receiver, change volume, switch HDMI inputs, mute, view receiver state, discover Yamaha devices on the LAN, or otherwise interact with their Yamaha amplifier without the physical remote. Speaks the YamahaExtendedControl (YXC) HTTP/JSON protocol; works against any MusicCast-capable Yamaha but verified on RX-V583.
+description: Controls Yamaha AV receivers (RX-V/RX-A series, MusicCast-capable) over the local network via the yamaha-cli command-line tool. Use when the user asks to power on/off the receiver, change volume, switch HDMI inputs, mute, set sound program / surround decoder / scene / tone / sleep timer, control the FM/AM tuner (with presets) or NetUSB playback (play/pause/skip/shuffle/repeat), recall MusicCast presets, group/ungroup MusicCast Link rooms, watch device events live (NDJSON push), reboot the receiver, view receiver state, discover Yamaha devices on the LAN, send raw YXC requests, send legacy YNCA control lines, or otherwise interact with their Yamaha amplifier without the physical remote. Speaks the YamahaExtendedControl (YXC) HTTP/JSON protocol plus optional YNCA on TCP/50000; works against any MusicCast-capable Yamaha but verified on RX-V583.
 license: MIT
 metadata:
   source-repo: github.com/ljagiello/yamaha-cli
@@ -33,6 +33,8 @@ If no host is configured and stdout is a TTY, any command triggers an interactiv
 
 All commands work against the active device (resolved per [references/CONFIG.md](references/CONFIG.md)). The `--output` flag controls formatting; default `auto` picks **table** for TTY and **JSON** when piped.
 
+### Core zone control
+
 ```bash
 yamaha status                                # current zone state
 yamaha status | jq -r .power                 # → "on"
@@ -44,9 +46,61 @@ yamaha volume -22.5 --db                     # absolute, dB-scaled
 yamaha volume 50 --percent                   # absolute, 0..100 → device range
 yamaha mute on|off|toggle
 yamaha input hdmi1                           # validated against device's input list
+```
+
+### Sound, scene, tone, sleep
+
+```bash
+yamaha sound straight                        # DSP sound program (validated against features)
+yamaha decoder dolby_surround                # surround decoder type (validated)
+yamaha scene 2                               # recall scene N (1..features.scene_num)
+yamaha tone bass +3                          # bass / treble step in device's range (e.g. -12..+12)
+yamaha tone treble -2
+yamaha tone reset                            # auto mode, bass=0, treble=0
+yamaha sleep 60                              # minutes: 0|30|60|90|120 or "off"
+```
+
+### Tuner (FM/AM)
+
+```bash
+yamaha tuner status
+yamaha tuner fm 102.5                        # MHz; validated against fm_freq range when known
+yamaha tuner am 1530                         # kHz
+yamaha tuner preset 7 --band fm              # recall preset on a band
+yamaha tuner presets --band fm               # list saved presets
+```
+
+### NetUSB / MusicCast playback
+
+```bash
+yamaha netusb info                           # now-playing payload (input/playback/repeat/shuffle/track/...)
+yamaha netusb play | pause | stop | toggle
+yamaha netusb next | prev
+yamaha netusb ff | rew                       # ~200 ms hold; auto-ends so the receiver doesn't get stuck
+yamaha netusb shuffle | netusb repeat        # toggles
+yamaha preset list                           # NetUSB MusicCast presets
+yamaha preset recall 3
+```
+
+### Discovery, config, ergonomics
+
+```bash
 yamaha discover                              # SSDP scan, list found Yamaha devices (no state changes)
 yamaha config show                           # dump resolved config as JSON/YAML/table
 yamaha config path                           # print config file path
+```
+
+### Phase 3: push events, multi-room, passthroughs
+
+```bash
+yamaha watch                                 # NDJSON push events from the active device
+yamaha watch --device living-room,bedroom    # multi-device watch
+yamaha link create living-room bedroom       # MusicCast Link group: leader, followers...
+yamaha link info                             # current distribution state
+yamaha link dissolve                         # tear down the group
+yamaha reboot --yes                          # destructive; --yes always required
+yamaha raw <method> [k=v ...]                # generic YXC GET passthrough (~184 endpoints)
+yamaha ynca <line>                           # legacy line protocol on TCP/50000
 ```
 
 For multi-zone receivers (RX-V583 has `main` + `zone2`):
@@ -100,9 +154,15 @@ These are non-obvious; check before assuming.
 - **Volume range is per-device.** Don't hardcode 0..100. RX-V583 is 0..161 → -80.5..+16.5 dB. Read from `getFeatures` (the CLI does this for you; `volume 50 --percent` is the safe scripted form).
 - **Power on takes 2–5 s to reflect.** Default `power on` blocks via polling (max 10 s). Use `--no-wait` only if you don't need the receiver ready immediately afterwards.
 - **Input switching may auto-fire `prepareInputChange` first** for inputs whose `func_list` requires it (e.g., `server`, `net_radio`). This is internal and free; just don't be surprised by two HTTP requests in `--debug`.
+- **`reboot` always requires `--yes`,** even on a TTY. The flag exists to prevent a stray pipeline from power-cycling the receiver. The CLI treats a post-ack transport error as success — the receiver routinely drops the TCP connection mid-reboot.
+- **`watch` is long-lived.** It runs until SIGINT (Ctrl-C); the subscriber auto-reconnects with exponential backoff (1 s → 60 s) when the receiver goes silent for 30 s. Don't set a timeout shorter than the silent-after window or you'll get spurious reconnects.
+- **`link create` / `link dissolve` need aliases**, not raw IPs — the operation runs against multiple receivers. Add devices with `discover --add` first if you only have one configured.
+- **`tuner fm <MHz>` takes MHz, `tuner am <kHz>` takes kHz.** Easy to mix up — the CLI validates against the device's reported range when available, but a typo can still tune to a wrong (valid) frequency.
+- **`raw` parameters are url-encoded automatically.** Repeated keys append, so `client_list[0].ip_address=…` works as a positional `k=v` arg. Quote args with brackets to keep the shell happy.
+- **`ynca` runs a one-shot probe** before sending. Devices that don't speak YNCA fail with exit 70 and a `does not support YNCA` message. RX-V583 supports both protocols.
 - **DHCP IP changes are handled transparently** when the device was added via `discover --add` (the UDN is stored). Anonymous `--host` / `YAMAHA_HOST` calls do **not** auto-recover.
 - **No HTTPS, no auth.** Anyone on the LAN can issue commands. Don't expose the receiver to untrusted networks.
-- **YXC is GET-only.** All operations are `GET /YamahaExtendedControl/v1/<method>?<params>` on port 80. No POSTs, no JSON request bodies.
+- **YXC is GET-only.** All operations are `GET /YamahaExtendedControl/v1/<method>?<params>` on port 80. No POSTs, no JSON request bodies. (YNCA is a separate line protocol on TCP/50000.)
 
 ## Debugging
 
@@ -116,6 +176,7 @@ Useful debug-trace prefixes:
 - `→ GET <url>` / `← <status> <body>` — every request/response.
 - `→ retry` — the silent single retry on transient transport errors fired.
 - `→ rediscover alias=… udn=…` — DHCP-resilience kicked in (config will be updated atomically).
+- `link: rollback after …` — `link create` partial-failure rollback ran (leader stopped, follower server pointers cleared).
 
 ## Workflows
 
@@ -140,6 +201,28 @@ current=$(yamaha status --output json | jq -r .volume)
 if [ "$current" -lt 100 ]; then
   yamaha volume +5
 fi
+```
+
+### Movie night: set up scene, sound, sleep
+```bash
+yamaha scene 1 \
+  && yamaha sound movie \
+  && yamaha volume 55 --percent \
+  && yamaha sleep 120
+```
+
+### Watch volume changes during a session
+```bash
+yamaha watch | jq 'select(.delta.main.volume) | {ts, vol: .delta.main.volume}'
+```
+Runs until Ctrl-C; auto-reconnects on a 30 s silent window.
+
+### Group two rooms, play, then dissolve
+```bash
+yamaha link create living-room bedroom \
+  && yamaha --device living-room netusb play
+# ... later ...
+yamaha link dissolve living-room
 ```
 
 ## References

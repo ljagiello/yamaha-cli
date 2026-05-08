@@ -202,3 +202,88 @@ func (c *Client) SetSleep(ctx context.Context, zone string, minutes int) error {
 	_, err = c.Do(ctx, z+"/setSleep", v)
 	return err
 }
+
+// SetSurroundDecoder selects the zone's surround decoder type, e.g.
+// "auto", "dolby_pl", "dts_neural_x". Validation against the zone's
+// surr_decoder_type_list is the caller's responsibility (see
+// pkg/yxc/validate).
+func (c *Client) SetSurroundDecoder(ctx context.Context, zone, decoderType string) error {
+	z, err := validZone(zone)
+	if err != nil {
+		return err
+	}
+	if decoderType == "" {
+		return errors.New("yxc: SetSurroundDecoder: empty decoderType")
+	}
+	v := url.Values{}
+	v.Set("type", decoderType)
+	_, err = c.Do(ctx, z+"/setSurroundDecoderType", v)
+	return err
+}
+
+// RecallScene recalls scene number num for the named zone. Scene numbers
+// are 1-indexed; the upper bound is the zone's scene_num from getFeatures.
+func (c *Client) RecallScene(ctx context.Context, zone string, num int) error {
+	z, err := validZone(zone)
+	if err != nil {
+		return err
+	}
+	if num < 1 {
+		return fmt.Errorf("yxc: RecallScene: num must be >= 1, got %d", num)
+	}
+	v := url.Values{}
+	v.Set("num", strconv.Itoa(num))
+	_, err = c.Do(ctx, z+"/recallScene", v)
+	return err
+}
+
+// ToneControlArg describes a setToneControl call.
+//
+// Use the constructor New* helpers (or build a struct literal) to set
+// only the fields you want to change; nil pointers for Bass/Treble are
+// omitted from the request, an empty Mode is omitted. The receiver
+// accepts partial forms (mode-only, bass-only, etc.).
+//
+// At least one of Mode/Bass/Treble must be non-empty/non-nil; the zero
+// value is rejected to avoid no-op requests.
+type ToneControlArg struct {
+	// Mode is typically "manual" or "auto". Empty omits the parameter.
+	Mode string
+	// Bass is the bass level in the zone's tone-control range
+	// (typically -12..+12). Nil omits the parameter.
+	Bass *int
+	// Treble is the treble level. Nil omits the parameter.
+	Treble *int
+}
+
+// SetToneControl sets bass/treble tone for the named zone.
+//
+// Pass a ToneControlArg with only the fields you want to change (the
+// receiver supports partial updates: mode-only, bass-only, treble-only,
+// or any combination). The zero value is rejected.
+//
+// Use IntPtr to construct *int values inline.
+func (c *Client) SetToneControl(ctx context.Context, zone string, arg ToneControlArg) error {
+	z, err := validZone(zone)
+	if err != nil {
+		return err
+	}
+	if arg.Mode == "" && arg.Bass == nil && arg.Treble == nil {
+		return errors.New("yxc: SetToneControl: at least one of mode/bass/treble must be set")
+	}
+	v := url.Values{}
+	if arg.Mode != "" {
+		v.Set("mode", arg.Mode)
+	}
+	if arg.Bass != nil {
+		v.Set("bass", strconv.Itoa(*arg.Bass))
+	}
+	if arg.Treble != nil {
+		v.Set("treble", strconv.Itoa(*arg.Treble))
+	}
+	_, err = c.Do(ctx, z+"/setToneControl", v)
+	return err
+}
+
+// IntPtr returns a pointer to n. Convenience for ToneControlArg literals.
+func IntPtr(n int) *int { return &n }
