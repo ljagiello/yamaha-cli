@@ -1,0 +1,27 @@
+# Behavioral evals for the yamaha-receiver skill, run via promptfoo.
+#
+# Run from the repo root:
+#   ANTHROPIC_API_KEY=... npx promptfoo eval --config evals/promptfooconfig.yaml
+#
+# Filter to a single skill while iterating:
+#   npx promptfoo eval --config evals/promptfooconfig.yaml --filter-pattern yamaha-receiver
+#
+# View the last run as a UI:
+#   npx promptfoo view
+
+description: yamaha-cli skill behavioral evals
+
+prompts:
+  - file://prompts/build_prompt.js:buildPrompt
+
+providers:
+  - id: anthropic:messages:claude-sonnet-4-6
+    label: claude-sonnet-4-6
+    config:
+      max_tokens: 1024
+      temperature: 0
+
+# Test files are split per skill so it's easy to add a new skill without
+# touching this top-level config.
+tests:
+  - file://tests/yamaha-receiver.yaml
