@@ -169,6 +169,7 @@ func (c *Client) do(ctx context.Context, method string, params url.Values, event
 	// Rate-limit before each *attempt*. The retry path also waits.
 	c.rateLimitWait(ctx)
 	body, err := c.doOnce(ctx, reqURL.String(), method, eventSubscription)
+	c.mark()
 
 	if err != nil && shouldRetry(ctx, err) {
 		select {
@@ -178,6 +179,7 @@ func (c *Client) do(ctx context.Context, method string, params url.Values, event
 		}
 		c.rateLimitWait(ctx)
 		body, err = c.doOnce(ctx, reqURL.String(), method, eventSubscription)
+		c.mark()
 	}
 	return body, err
 }
@@ -239,13 +241,16 @@ func (c *Client) doOnce(ctx context.Context, fullURL, method string, eventSubscr
 }
 
 // rateLimitWait blocks until at least defaultRateLimit has elapsed since
-// the last completed request on this Client, or ctx is cancelled.
+// the last completed request on this Client, or ctx is cancelled. The
+// caller is responsible for calling mark() once the request has completed
+// — measuring the gap from completion (rather than from request-start)
+// keeps the on-the-wire spacing reliable when keep-alive lets a second
+// request reach the receiver faster than the first.
 func (c *Client) rateLimitWait(ctx context.Context) {
 	c.mu.Lock()
 	wait := defaultRateLimit - time.Since(c.lastCall)
 	c.mu.Unlock()
 	if wait <= 0 {
-		c.mark()
 		return
 	}
 	select {
@@ -253,7 +258,6 @@ func (c *Client) rateLimitWait(ctx context.Context) {
 		// Caller will see ctx.Err() on the request itself.
 	case <-time.After(wait):
 	}
-	c.mark()
 }
 
 func (c *Client) mark() {
