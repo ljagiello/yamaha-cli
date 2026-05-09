@@ -1,0 +1,189 @@
+# Behavioral evals for the yamaha-receiver-control skill.
+#
+# Each case loads skills/yamaha-receiver-control/SKILL.md as the system
+# prompt (via build_prompt.js) and asserts that the model's reply respects
+# the skill's rules: emits valid `yamaha` commands, prefers discovery for
+# device-specific enums, refuses to invent missing subcommands, and treats
+# `reboot` as destructive.
+
+- description: mute is a single stateless command
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Give me the exact one-line shell command to mute the receiver.
+      No commentary, just the command.
+  assert:
+    - type: regex
+      value: '^\s*yamaha\s+mute\s+on\s*$'
+
+- description: discovery-first for sound program ambiguity
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      I want to play music in stereo. What yamaha command(s) should I run?
+  assert:
+    - type: contains
+      value: 2ch_stereo
+    - type: llm-rubric
+      value: |
+        The response must use the canonical sound program ID `2ch_stereo`
+        as the argument to `yamaha sound`. It is acceptable (and
+        encouraged) to suggest running `yamaha sound` with no argument
+        first to enumerate the supported programs for the active zone.
+        It must NOT invent a display-name argument like
+        `yamaha sound "2-Channel Stereo"`, `yamaha sound stereo`, or
+        `yamaha sound stereo-2ch`. It must NOT recommend `yamaha mode`,
+        `yamaha dsp`, or any other invented subcommand.
+
+- description: relative volume down uses the documented syntax
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Turn the volume down a bit. Show me the exact command.
+  assert:
+    - type: regex
+      value: 'yamaha\s+volume\s+(?:-\d+|down)'
+    - type: not-contains
+      value: --decrease
+
+- description: reboot must include --yes and warn it is destructive
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      How do I reboot the receiver from the command line?
+  assert:
+    - type: contains
+      value: --yes
+    - type: llm-rubric
+      value: |
+        The response must show `yamaha reboot --yes` (the `--yes` flag
+        is mandatory). It must convey that this is a destructive
+        operation that will drop the connection and bounce the
+        receiver. It is acceptable to mention that the CLI treats
+        post-ack transport errors as success.
+
+- description: refuses to invent a stop-recording / stop-ff command
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      How do I cancel a fast-forward partway through? Is there a
+      `yamaha netusb ff stop` or similar?
+  assert:
+    - type: llm-rubric
+      value: |
+        The response must clearly state that there is no explicit stop
+        for `yamaha netusb ff` — the command brackets a start/end pair
+        with a ~200 ms hold and the end fires automatically (also on
+        SIGINT). It must NOT recommend an invented subcommand like
+        `yamaha netusb ff stop`, `yamaha netusb stop-ff`, or
+        `yamaha netusb cancel`.
+
+- description: input switching prefers discovery for friendly names
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Switch to my Apple TV. How do I do that?
+  assert:
+    - type: llm-rubric
+      value: |
+        The response must explain that input names are device-specific
+        (something like `hdmi1`, `hdmi2`, `audio1`) and that the user
+        should run `yamaha input` (no argument) to list the supported
+        inputs for their active zone, then run `yamaha input <name>`.
+        It must NOT guess a specific HDMI port number for "Apple TV"
+        without flagging that the mapping depends on which physical
+        port the Apple TV is connected to. It must NOT invent a
+        friendly-name input like `yamaha input apple-tv`.
+
+- description: sleep value validation
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Set the sleep timer to 45 minutes. What command?
+  assert:
+    - type: llm-rubric
+      value: |
+        The response must clearly state that 45 is NOT an accepted
+        sleep value — only 0, 30, 60, 90, 120, and `off` are accepted
+        — and either suggest the closest valid value (30 or 60) or
+        ask the user which one they prefer. It must NOT silently
+        produce `yamaha sleep 45`.
+
+- description: tuner FM frequency uses MHz
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Tune in to 102.5 FM. Exact command, no commentary.
+  assert:
+    - type: regex
+      value: '^\s*yamaha\s+tuner\s+fm\s+102\.5\s*$'
+
+- description: JSON output for scripting
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      I want to consume `yamaha status` from a shell script and parse
+      it with jq. What's the right invocation?
+  assert:
+    - type: contains
+      value: --output json
+    - type: llm-rubric
+      value: |
+        The response must show `yamaha status --output json` (or
+        equivalently note that piping triggers JSON via `--output auto`,
+        the default). It is acceptable to mention `YAMAHA_OUTPUT=json`
+        as an env-var alternative. It must NOT invent flags like
+        `--json`, `--format=json`, or `-j`.
+
+- description: link create requires aliases, not raw hosts
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      I want to group my living room receiver (192.168.1.116) with my
+      kitchen receiver (192.168.1.117) so they play in sync. What
+      command?
+  assert:
+    - type: llm-rubric
+      value: |
+        The response must explain that `yamaha link create` takes
+        configured aliases (from ~/.config/yamaha-cli/config.yaml),
+        not raw IP addresses or `--host` values. It must instruct the
+        user to first add each device as an alias (e.g. via
+        `yamaha discover --add` or by editing the config) and then
+        run something like `yamaha link create living-room kitchen`.
+        It must NOT show `yamaha link create 192.168.1.116 192.168.1.117`
+        or `yamaha link create --host 192.168.1.116 ...` as a working
+        invocation.
+
+- description: refuses to invent an EQ subcommand
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Boost the midrange by 4 dB. What command?
+  assert:
+    - type: llm-rubric
+      value: |
+        The response must state that the `yamaha` CLI does not expose
+        a midrange / parametric EQ — only `yamaha tone bass <±N>` and
+        `yamaha tone treble <±N>` (range -12..+12). It must NOT invent
+        `yamaha eq`, `yamaha equalizer`, `yamaha tone mid`, or similar.
+        It is acceptable to suggest `yamaha raw <method>` if there's a
+        relevant YXC method, or to direct the user to the MusicCast
+        app for full EQ.
+
+- description: does not guess a sound program ID it can't be sure of
+  vars:
+    skillDir: skills/yamaha-receiver-control
+    userPrompt: |
+      Switch to a movie-watching DSP mode. Exact command.
+  assert:
+    - type: llm-rubric
+      value: |
+        The response must either (a) recommend running `yamaha sound`
+        with no argument first to enumerate the device's supported DSP
+        programs and pick the appropriate one, or (b) name a plausible
+        canonical movie-oriented program ID (`spectacle`, `sci-fi`,
+        `adventure`, `drama`, `mono_movie`, `standard`) while
+        acknowledging the available programs differ per receiver. It
+        must NOT invent a non-canonical ID like `movie`, `cinema`, or
+        `movie_mode`.
