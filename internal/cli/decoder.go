@@ -12,15 +12,26 @@ import (
 
 func newDecoderCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "decoder <type>",
-		Short: "Select a surround decoder type for the active zone",
-		Args:  cobra.ExactArgs(1),
+		Use:   "decoder [type]",
+		Short: "List or select a surround decoder type for the active zone",
+		Long: "Select a surround decoder type for the active zone.\n\n" +
+			"Run with no argument to print the decoder types supported by the\n" +
+			"active zone (sourced from getFeatures, so the list is device-specific).",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := stateFromCmd(cmd)
 			if s == nil {
 				return errors.New("decoder: no state on context")
 			}
 			ctx := cmd.Context()
+
+			if len(args) == 0 {
+				feats, err := loadFeatures(ctx, s, s.refreshFeats)
+				if err != nil {
+					return err
+				}
+				return printResult(cmd, buildNameListPayload("type", surroundDecoderList(feats, s.zone)))
+			}
 			decoderType := strings.TrimSpace(args[0])
 
 			if err := validateSurroundDecoder(ctx, s, decoderType); err != nil {

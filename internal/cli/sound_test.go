@@ -100,6 +100,57 @@ func TestRunSound_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunSound_NoArgListsPrograms asserts that `yamaha sound` with no
+// argument prints the zone's sound_program_list (sourced from cached
+// features) and never fires setSoundProgram.
+func TestRunSound_NoArgListsPrograms(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEC50003"
+
+	var setHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/system/getDeviceInfo"):
+			_, _ = w.Write([]byte(`{"response_code":0,"device_id":"` + deviceID + `","model_name":"RX-V583"}`))
+		case strings.HasSuffix(r.URL.Path, "/system/getFeatures"):
+			payload, _ := json.Marshal(soundFeatures())
+			_, _ = w.Write(payload)
+		case strings.HasSuffix(r.URL.Path, "/main/setSoundProgram"):
+			atomic.AddInt32(&setHits, 1)
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	s := newSoundTestState(t, srv, deviceID)
+
+	cmd := newSoundCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, s)
+	out := &strings.Builder{}
+	cmd.SetOut(out)
+	cmd.SetErr(&strings.Builder{})
+	cmd.Flags().String("output", "json", "")
+	cmd.SetArgs(nil)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := atomic.LoadInt32(&setHits); got != 0 {
+		t.Errorf("setSoundProgram hits: got %d, want 0", got)
+	}
+	body := out.String()
+	for _, want := range []string{"standard", "straight", "2ch_stereo", "movie"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("output missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
 // TestRunSound_UnknownProgramRejected asserts that an unknown program
 // returns a *ValidationError with suggestions and never fires
 // setSoundProgram.
