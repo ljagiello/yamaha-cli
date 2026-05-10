@@ -40,6 +40,18 @@ func isStdinTTY() bool {
 	return isatty.IsTerminal(os.Stdin.Fd())
 }
 
+// buildNameListPayload wraps a flat list of names into the []map[string]any
+// shape the output renderer prefers, keyed by the supplied field name. Used
+// by `sound`, `input`, `decoder` (no-arg) to enumerate the values reported
+// by getFeatures for the active zone.
+func buildNameListPayload(field string, names []string) []map[string]any {
+	rows := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		rows = append(rows, map[string]any{field: n})
+	}
+	return rows
+}
+
 // printResult renders a successful command's payload to cmd.OutOrStdout.
 // Mutating commands typically pass map[string]any{} → "{}" in JSON, "ok"
 // in table mode.

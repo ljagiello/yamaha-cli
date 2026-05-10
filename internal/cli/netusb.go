@@ -165,7 +165,13 @@ func runFastSeek(ctx context.Context, s *state, start, end yxc.Playback) error {
 	if err := runWithRediscover(ctx, s, func(c *yxc.Client) error {
 		return c.SetPlayback(ctx, start)
 	}); err != nil {
-		return err
+		// If the start failed because ctx was cancelled mid-flight, the
+		// request may still have reached the receiver — fall through to
+		// the end-send path so we don't leave it stuck in fast-seek. A
+		// stray end against an idle receiver is a no-op.
+		if ctx.Err() == nil {
+			return err
+		}
 	}
 
 	// Wait for the bracket window. On cancellation, drop through to send

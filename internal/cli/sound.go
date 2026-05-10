@@ -12,15 +12,26 @@ import (
 
 func newSoundCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "sound <program>",
-		Short: "Select a DSP sound program for the active zone",
-		Args:  cobra.ExactArgs(1),
+		Use:   "sound [program]",
+		Short: "List or select a DSP sound program for the active zone",
+		Long: "Select a DSP sound program for the active zone.\n\n" +
+			"Run with no argument to print the programs supported by the active\n" +
+			"zone (sourced from getFeatures, so the list is device-specific).",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := stateFromCmd(cmd)
 			if s == nil {
 				return errors.New("sound: no state on context")
 			}
 			ctx := cmd.Context()
+
+			if len(args) == 0 {
+				feats, err := loadFeatures(ctx, s, s.refreshFeats)
+				if err != nil {
+					return err
+				}
+				return printResult(cmd, buildNameListPayload("program", feats.ZoneSoundPrograms(s.zone)))
+			}
 			program := strings.TrimSpace(args[0])
 
 			if err := validateSoundProgram(ctx, s, program); err != nil {

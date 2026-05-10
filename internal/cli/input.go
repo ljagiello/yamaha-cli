@@ -12,15 +12,26 @@ import (
 
 func newInputCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "input <name>",
-		Short: "Switch the active zone to the given input",
-		Args:  cobra.ExactArgs(1),
+		Use:   "input [name]",
+		Short: "List or switch the active zone's input",
+		Long: "Switch the active zone to the given input.\n\n" +
+			"Run with no argument to print the inputs supported by the active\n" +
+			"zone (sourced from getFeatures, so the list is device-specific).",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := stateFromCmd(cmd)
 			if s == nil {
 				return errors.New("input: no state on context")
 			}
 			ctx := cmd.Context()
+
+			if len(args) == 0 {
+				feats, err := loadFeatures(ctx, s, s.refreshFeats)
+				if err != nil {
+					return err
+				}
+				return printResult(cmd, buildNameListPayload("input", allowedInputs(feats, s.zone)))
+			}
 			name := strings.TrimSpace(args[0])
 
 			feats, err := validateInput(ctx, s, name)
