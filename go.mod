@@ -3,7 +3,7 @@ module github.com/ljagiello/yamaha-cli
 go 1.26.2
 
 require (
-	github.com/koron/go-ssdp v0.1.0
+	github.com/koron/go-ssdp v0.9.0
 	github.com/mattn/go-isatty v0.0.22
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
