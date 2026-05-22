@@ -166,23 +166,32 @@ func (c *Client) BaseURL() string {
 // JSON body on success. On YXC `response_code != 0` it returns a typed
 // *Error.
 func (c *Client) Do(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
-	return c.do(ctx, method, params, false)
+	return c.do(ctx, method, params, 0)
 }
 
 // EventDo issues a YXC GET that subscribes to push events. It adds the
 // X-AppName / X-AppPort headers required by the receiver to direct UDP
 // event traffic back to the caller. Requires WithEventPort to have been
 // supplied.
+//
+// The configured event port is snapshotted once at entry and propagated
+// through retries — the locked accessor is not consulted again inside
+// doOnce, eliminating a TOCTOU window where a concurrent setEventPort
+// could land between the guard and the X-AppPort header write.
 func (c *Client) EventDo(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
-	if c.currentEventPort() == 0 {
+	port := c.currentEventPort()
+	if port == 0 {
 		return nil, errors.New("yxc: EventDo requires WithEventPort to be configured")
 	}
-	return c.do(ctx, method, params, true)
+	return c.do(ctx, method, params, port)
 }
 
 // do is the internal request engine. It implements the rate-limit, single
 // retry on transient errors, response_code parsing, and header policy.
-func (c *Client) do(ctx context.Context, method string, params url.Values, eventSubscription bool) (json.RawMessage, error) {
+//
+// eventPort: 0 means a regular Do call; any non-zero value is the UDP
+// port to advertise via X-AppPort for an event subscription.
+func (c *Client) do(ctx context.Context, method string, params url.Values, eventPort int) (json.RawMessage, error) {
 	if ctx == nil {
 		return nil, errors.New("yxc: nil context")
 	}
@@ -197,7 +206,7 @@ func (c *Client) do(ctx context.Context, method string, params url.Values, event
 
 	// Rate-limit before each *attempt*. The retry path also waits.
 	c.rateLimitWait(ctx)
-	body, err := c.doOnce(ctx, reqURL.String(), method, eventSubscription)
+	body, err := c.doOnce(ctx, reqURL.String(), method, eventPort)
 	c.mark()
 
 	if err != nil && shouldRetry(ctx, err) {
@@ -207,22 +216,26 @@ func (c *Client) do(ctx context.Context, method string, params url.Values, event
 		case <-time.After(defaultRetryWait):
 		}
 		c.rateLimitWait(ctx)
-		body, err = c.doOnce(ctx, reqURL.String(), method, eventSubscription)
+		body, err = c.doOnce(ctx, reqURL.String(), method, eventPort)
 		c.mark()
 	}
 	return body, err
 }
 
-// doOnce performs exactly one HTTP attempt with no retry logic.
-func (c *Client) doOnce(ctx context.Context, fullURL, method string, eventSubscription bool) (json.RawMessage, error) {
+// doOnce performs exactly one HTTP attempt with no retry logic. A
+// non-zero eventPort means this request is registering for push
+// events; the X-AppName / X-AppPort headers are attached and the
+// port value is the one EventDo snapshotted at entry (NOT re-read
+// from the client mutex — see EventDo for the rationale).
+func (c *Client) doOnce(ctx context.Context, fullURL, method string, eventPort int) (json.RawMessage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", c.userAgent)
-	if eventSubscription {
+	if eventPort != 0 {
 		req.Header.Set("X-AppName", "MusicCast")
-		req.Header.Set("X-AppPort", fmt.Sprintf("%d", c.currentEventPort()))
+		req.Header.Set("X-AppPort", fmt.Sprintf("%d", eventPort))
 	}
 
 	resp, err := c.httpClient.Do(req)

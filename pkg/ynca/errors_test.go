@@ -9,6 +9,18 @@ import (
 	"testing"
 )
 
+// customNetErr is a minimal net.Error implementation used to exercise
+// the final errors.As(err, &net.Error) fallthrough in IsTransport.
+// Distinct from *net.OpError so it only matches the interface branch.
+type customNetErr struct {
+	msg     string
+	timeout bool
+}
+
+func (e *customNetErr) Error() string   { return e.msg }
+func (e *customNetErr) Timeout() bool   { return e.timeout }
+func (e *customNetErr) Temporary() bool { return false }
+
 // TestIsTransport covers every classification branch so the CLI's
 // DHCP-rediscovery trigger stays predictable. The key non-obvious
 // case is context.DeadlineExceeded — it implements net.Error and
@@ -45,6 +57,13 @@ func TestIsTransport(t *testing.T) {
 		{"net.OpError", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
 		{"wrapped dial OpError", fmt.Errorf("ynca: dial 1.2.3.4:50000: %w",
 			&net.OpError{Op: "dial", Err: errors.New("no route to host")}), true},
+
+		// Custom net.Error impl that doesn't match the io / *net.OpError
+		// branches above — exercises the final errors.As(err, &net.Error)
+		// fallthrough. Without this case, the fallthrough could be
+		// deleted and the test suite would still pass.
+		{"custom net.Error", &customNetErr{msg: "boom", timeout: false}, true},
+		{"custom net.Error (timeout)", &customNetErr{msg: "i/o timeout", timeout: true}, true},
 
 		// Unknown plain error — not transport.
 		{"plain error", errors.New("something else"), false},

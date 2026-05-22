@@ -63,6 +63,49 @@ func newTransportError(t *testing.T) error {
 	return err
 }
 
+// assertUnreachable verifies err unwraps to *unreachableError with the
+// expected alias/udn and that ErrorExitCode returns 69. Used across
+// both YXC and YNCA rediscover-failure tests where the wrap is the
+// load-bearing observable.
+func assertUnreachable(t *testing.T, err error, wantAlias, wantUDN string) {
+	t.Helper()
+	var ue *unreachableError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *unreachableError, got %v (%T)", err, err)
+	}
+	if ue.alias != wantAlias || ue.udn != wantUDN {
+		t.Errorf("unreachable fields: alias=%q udn=%q; want %q / %q",
+			ue.alias, ue.udn, wantAlias, wantUDN)
+	}
+	if got := ErrorExitCode(err); got != 69 {
+		t.Errorf("ErrorExitCode: got %d want 69", got)
+	}
+}
+
+// assertCancelled verifies err unwraps to *cancelledError and exit
+// code is 130. Shared by SIGINT-during-lookup and parent-ctx-cancelled
+// scenarios in both YXC and YNCA suites.
+func assertCancelled(t *testing.T, err error) {
+	t.Helper()
+	var ce *cancelledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cancelledError, got %v (%T)", err, err)
+	}
+	if got := ErrorExitCode(err); got != 130 {
+		t.Errorf("ErrorExitCode: got %d want 130", got)
+	}
+}
+
+// assertNoLookup verifies the SSDP lookup stub was never invoked. Used
+// by tests that should short-circuit before rediscovery (anonymous
+// mode, no UDN, non-transport error).
+func assertNoLookup(t *testing.T, stub *stubLookup) {
+	t.Helper()
+	if stub.calls != 0 {
+		t.Errorf("lookup should not be called, got %d", stub.calls)
+	}
+}
+
 // newStateForTest returns a *state suitable for runWithRediscover
 // scenarios. Caller mutates fields per case.
 func newStateForTest(t *testing.T, alias, udn, host string) *state {
@@ -110,9 +153,7 @@ func TestRunWithRediscover_Anonymous(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("op should run exactly once, got %d", calls)
 	}
-	if stub.calls != 0 {
-		t.Errorf("lookup should not be called, got %d", stub.calls)
-	}
+	assertNoLookup(t, stub)
 }
 
 // TestRunWithRediscover_NoUDN verifies that an aliased device without a
@@ -136,9 +177,7 @@ func TestRunWithRediscover_NoUDN(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("op should run exactly once, got %d", calls)
 	}
-	if stub.calls != 0 {
-		t.Errorf("lookup should not be called, got %d", stub.calls)
-	}
+	assertNoLookup(t, stub)
 }
 
 // TestRunWithRediscover_Success verifies the happy path: op fails with a
@@ -238,22 +277,7 @@ func TestRunWithRediscover_LookupFails(t *testing.T) {
 		return transportErr
 	}
 	err := runWithRediscover(context.Background(), s, op)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var ue *unreachableError
-	if !errors.As(err, &ue) {
-		t.Fatalf("expected *unreachableError, got %v (%T)", err, err)
-	}
-	if ue.alias != "living-room" {
-		t.Errorf("unreachable.alias: got %q want living-room", ue.alias)
-	}
-	if ue.udn != "uuid:abc" {
-		t.Errorf("unreachable.udn: got %q want uuid:abc", ue.udn)
-	}
-	if got := ErrorExitCode(err); got != 69 {
-		t.Errorf("ErrorExitCode: got %d want 69", got)
-	}
+	assertUnreachable(t, err, "living-room", "uuid:abc")
 }
 
 // TestRunWithRediscover_LookupCancelled verifies the SIGINT-during-rediscover
@@ -276,16 +300,7 @@ func TestRunWithRediscover_LookupCancelled(t *testing.T) {
 		return transportErr
 	}
 	err := runWithRediscover(context.Background(), s, op)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var ce *cancelledError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *cancelledError, got %v (%T)", err, err)
-	}
-	if got := ErrorExitCode(err); got != 130 {
-		t.Errorf("ErrorExitCode: got %d, want 130", got)
-	}
+	assertCancelled(t, err)
 	if calls != 1 {
 		t.Errorf("op should run exactly once before lookup, got %d", calls)
 	}
@@ -312,13 +327,7 @@ func TestRunWithRediscover_ParentCtxCancelledDuringLookup(t *testing.T) {
 
 	op := func(_ *yxc.Client) error { return transportErr }
 	err := runWithRediscover(ctx, s, op)
-	var ce *cancelledError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *cancelledError when parent ctx is cancelled, got %v (%T)", err, err)
-	}
-	if got := ErrorExitCode(err); got != 130 {
-		t.Errorf("ErrorExitCode: got %d, want 130", got)
-	}
+	assertCancelled(t, err)
 }
 
 // TestRunWithRediscover_NonTransportError verifies that a non-transport
@@ -343,9 +352,7 @@ func TestRunWithRediscover_NonTransportError(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("op should run exactly once, got %d", calls)
 	}
-	if stub.calls != 0 {
-		t.Errorf("lookup should not be called, got %d", stub.calls)
-	}
+	assertNoLookup(t, stub)
 }
 
 // --- YNCA twin: runYNCAWithRediscover ---
@@ -379,9 +386,7 @@ func TestRunYNCAWithRediscover_Anonymous(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("op should run exactly once, got %d", calls)
 	}
-	if stub.calls != 0 {
-		t.Errorf("lookup should not be called, got %d", stub.calls)
-	}
+	assertNoLookup(t, stub)
 }
 
 // TestRunYNCAWithRediscover_NoUDN: alias set but UDN=="" (pre-v5
@@ -403,9 +408,7 @@ func TestRunYNCAWithRediscover_NoUDN(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("op should run exactly once, got %d", calls)
 	}
-	if stub.calls != 0 {
-		t.Errorf("lookup should not be called, got %d", stub.calls)
-	}
+	assertNoLookup(t, stub)
 }
 
 // TestRunYNCAWithRediscover_Success: op fails with transport, lookup
@@ -466,17 +469,7 @@ func TestRunYNCAWithRediscover_LookupFails(t *testing.T) {
 	op := func(_ *ynca.Client) error { return io.EOF }
 
 	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
-	var ue *unreachableError
-	if !errors.As(err, &ue) {
-		t.Fatalf("expected *unreachableError, got %v (%T)", err, err)
-	}
-	if ue.alias != "living-room" || ue.udn != "uuid:abc" {
-		t.Errorf("unreachable fields: alias=%q udn=%q; want living-room / uuid:abc",
-			ue.alias, ue.udn)
-	}
-	if got := ErrorExitCode(err); got != 69 {
-		t.Errorf("ErrorExitCode: got %d want 69", got)
-	}
+	assertUnreachable(t, err, "living-room", "uuid:abc")
 }
 
 // TestRunYNCAWithRediscover_LookupCancelled: SSDP returns
@@ -490,13 +483,7 @@ func TestRunYNCAWithRediscover_LookupCancelled(t *testing.T) {
 	op := func(_ *ynca.Client) error { return io.EOF }
 
 	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
-	var ce *cancelledError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *cancelledError, got %v (%T)", err, err)
-	}
-	if got := ErrorExitCode(err); got != 130 {
-		t.Errorf("ErrorExitCode: got %d want 130", got)
-	}
+	assertCancelled(t, err)
 }
 
 // TestRunYNCAWithRediscover_ParentCtxCancelledDuringLookup: the stub
@@ -513,13 +500,7 @@ func TestRunYNCAWithRediscover_ParentCtxCancelledDuringLookup(t *testing.T) {
 
 	op := func(_ *ynca.Client) error { return io.EOF }
 	err := runYNCAWithRediscover(ctx, s, ynaTestTimeout, op)
-	var ce *cancelledError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *cancelledError when parent ctx is cancelled, got %v (%T)", err, err)
-	}
-	if got := ErrorExitCode(err); got != 130 {
-		t.Errorf("ErrorExitCode: got %d want 130", got)
-	}
+	assertCancelled(t, err)
 }
 
 // TestRunYNCAWithRediscover_NonTransportError: op returns an
@@ -544,9 +525,7 @@ func TestRunYNCAWithRediscover_NonTransportError(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("op should run exactly once, got %d", calls)
 	}
-	if stub.calls != 0 {
-		t.Errorf("lookup should not be called, got %d", stub.calls)
-	}
+	assertNoLookup(t, stub)
 }
 
 // TestRunYNCAWithRediscover_RetryStillTransport: lookup succeeds and a
@@ -573,15 +552,9 @@ func TestRunYNCAWithRediscover_RetryStillTransport(t *testing.T) {
 		return io.EOF
 	}
 	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
-	var ue *unreachableError
-	if !errors.As(err, &ue) {
-		t.Fatalf("expected *unreachableError after retry, got %v (%T)", err, err)
-	}
+	assertUnreachable(t, err, "living-room", "uuid:abc")
 	if calls != 2 {
 		t.Errorf("op should run exactly twice (initial + one retry), got %d", calls)
-	}
-	if got := ErrorExitCode(err); got != 69 {
-		t.Errorf("ErrorExitCode: got %d want 69", got)
 	}
 }
 

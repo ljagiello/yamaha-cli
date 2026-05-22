@@ -98,6 +98,41 @@ func TestWrapTransportError_RawWrappedToUnreachable(t *testing.T) {
 	}
 }
 
+// TestWrapTransportError_AnonymousHost covers the --host / YAMAHA_HOST
+// path: state has no alias and no saved UDN. The wrap must still
+// produce *unreachableError with the bare-bones "device not reachable"
+// message — this is what the most common --host failure mode renders
+// to the user.
+func TestWrapTransportError_AnonymousHost(t *testing.T) {
+	t.Parallel()
+	root := &cobra.Command{Use: "yamaha"}
+	root.SetContext(context.Background())
+	// Anonymous state: zero-valued alias and device.UDN.
+	setStateOnCmd(root, &state{
+		alias:  "",
+		device: config.Device{Host: "192.0.2.1"},
+	})
+
+	tErr := realTransportError(t)
+	got := wrapTransportError(root, tErr)
+
+	var ue *unreachableError
+	if !errors.As(got, &ue) {
+		t.Fatalf("wrapped err = %T (%v), want *unreachableError", got, got)
+	}
+	if ue.alias != "" || ue.udn != "" {
+		t.Errorf("anonymous unreachableError should have empty alias/udn, got alias=%q udn=%q",
+			ue.alias, ue.udn)
+	}
+	const wantMsg = "device not reachable; check power and network"
+	if got := ue.Error(); got != wantMsg {
+		t.Errorf("rendered message: got %q want %q", got, wantMsg)
+	}
+	if code := ErrorExitCode(got); code != 69 {
+		t.Errorf("exit code = %d, want 69", code)
+	}
+}
+
 // TestWrapTransportError_LeavesUnreachableAlone confirms that an error
 // that's already an *unreachableError (e.g. from runWithRediscover)
 // isn't double-wrapped.
