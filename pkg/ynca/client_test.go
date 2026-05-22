@@ -220,6 +220,86 @@ func TestSend_CtxCancellation(t *testing.T) {
 	}
 }
 
+// TestSend_RedialsAfterCancel verifies that a ctx-cancelled Send leaves
+// the connection closed so the next Send dials a fresh socket. Before
+// the fix, the poisoned conn was reused and the next Send either timed
+// out or returned the previous request's late reply.
+func TestSend_RedialsAfterCancel(t *testing.T) {
+	t.Parallel()
+	var accepted int64
+	var first int64 // 1 == first conn (sleep), >=2 == subsequent (reply fast)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var wg sync.WaitGroup
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			n := atomic.AddInt64(&accepted, 1)
+			if n == 1 {
+				atomic.StoreInt64(&first, 1)
+			}
+			wg.Add(1)
+			go func(c net.Conn, attempt int64) {
+				defer wg.Done()
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				scanner.Buffer(make([]byte, 0, 4096), 64*1024)
+				scanner.Split(splitCRLF)
+				for scanner.Scan() {
+					if attempt == 1 {
+						// Sleep past the ctx-cancel so the client sees
+						// context.Canceled. Reply if we ever wake up so
+						// any erroneous reuse on the next Send picks up
+						// this late line.
+						time.Sleep(300 * time.Millisecond)
+						_, _ = io.WriteString(c, "@MAIN:PWR=Off\r\n")
+						return
+					}
+					_, _ = io.WriteString(c, "@MAIN:PWR=On\r\n")
+				}
+			}(conn, n)
+		}
+	}()
+	t.Cleanup(func() { _ = l.Close(); wg.Wait() })
+
+	c, err := New(l.Addr().String(), WithTimeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel1()
+	}()
+	if _, err := c.Send(ctx1, "@MAIN:PWR=?"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Send err = %v, want context.Canceled", err)
+	}
+
+	// Give the watchdog goroutine a beat to finish so closeLocked has
+	// definitively run.
+	time.Sleep(10 * time.Millisecond)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	reply, err := c.Send(ctx2, "@MAIN:PWR=?")
+	if err != nil {
+		t.Fatalf("second Send: %v", err)
+	}
+	if reply != "@MAIN:PWR=On" {
+		t.Errorf("reply = %q, want @MAIN:PWR=On (second conn); got the late first-conn reply?", reply)
+	}
+	if got := atomic.LoadInt64(&accepted); got != 2 {
+		t.Errorf("server accepted %d connections, want 2 (fresh dial after cancel)", got)
+	}
+}
+
 func TestSend_Concurrent(t *testing.T) {
 	t.Parallel()
 	// Each request carries a unique tag; the server echoes the value.
