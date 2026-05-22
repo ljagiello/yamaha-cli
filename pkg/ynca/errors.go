@@ -58,7 +58,13 @@ func IsTransport(err error) bool {
 		return false
 	}
 	// Application / known-non-transport outcomes — never rediscover.
-	if errors.Is(err, context.Canceled) {
+	// context.DeadlineExceeded implements net.Error (Timeout()==true), so
+	// the net.Error fallthrough below would otherwise classify a
+	// per-Send timeout as transport and trigger an SSDP scan on every
+	// slow command. The YXC twin (yxc.IsTransport) only matches its
+	// own *transportError, so this guard keeps the two classifiers
+	// symmetric.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrNoReply) {

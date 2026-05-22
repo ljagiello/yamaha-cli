@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
 	"github.com/ljagiello/yamaha-cli/pkg/discover"
+	"github.com/ljagiello/yamaha-cli/pkg/ynca"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -343,5 +345,278 @@ func TestRunWithRediscover_NonTransportError(t *testing.T) {
 	}
 	if stub.calls != 0 {
 		t.Errorf("lookup should not be called, got %d", stub.calls)
+	}
+}
+
+// --- YNCA twin: runYNCAWithRediscover ---
+//
+// The tests below mirror the YXC suite branch-for-branch so the two
+// rediscovery flows stay symmetric. The op signature is
+// func(*ynca.Client) error; we never call methods on the client (no
+// dial happens until the first Send), so the tests can drive every
+// branch with synthetic errors.
+
+// ynaTestTimeout is the timeout passed to s.newYNCAClient in tests. It
+// only governs dial/read deadlines — and since these tests never dial,
+// the value is immaterial. Kept short for clarity.
+const ynaTestTimeout = 200 * time.Millisecond
+
+// TestRunYNCAWithRediscover_Anonymous: alias=="" → no rediscover.
+func TestRunYNCAWithRediscover_Anonymous(t *testing.T) {
+	stub := &stubLookup{}
+	stub.install(t)
+
+	s := newStateForTest(t, "", "uuid:abc", "192.0.2.1")
+	var calls int
+	op := func(_ *ynca.Client) error {
+		calls++
+		return io.EOF // ynca.IsTransport(EOF) == true
+	}
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF passthrough, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("op should run exactly once, got %d", calls)
+	}
+	if stub.calls != 0 {
+		t.Errorf("lookup should not be called, got %d", stub.calls)
+	}
+}
+
+// TestRunYNCAWithRediscover_NoUDN: alias set but UDN=="" (pre-v5
+// config) skips rediscovery entirely.
+func TestRunYNCAWithRediscover_NoUDN(t *testing.T) {
+	stub := &stubLookup{}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "", "192.0.2.1")
+	var calls int
+	op := func(_ *ynca.Client) error {
+		calls++
+		return io.EOF
+	}
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected io.EOF passthrough, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("op should run exactly once, got %d", calls)
+	}
+	if stub.calls != 0 {
+		t.Errorf("lookup should not be called, got %d", stub.calls)
+	}
+}
+
+// TestRunYNCAWithRediscover_Success: op fails with transport, lookup
+// finds the new IP, op runs again and succeeds, config is rewritten.
+func TestRunYNCAWithRediscover_Success(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	stub := &stubLookup{
+		dev: discover.Device{Host: "192.0.2.99", UDN: "uuid:abc"},
+	}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+	if err := config.Save(s.cfg); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	var calls int
+	op := func(_ *ynca.Client) error {
+		calls++
+		if calls == 1 {
+			return io.EOF
+		}
+		return nil
+	}
+	if err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op); err != nil {
+		t.Fatalf("runYNCAWithRediscover: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("op should run twice, got %d", calls)
+	}
+	if stub.calls != 1 {
+		t.Errorf("lookup should run once, got %d", stub.calls)
+	}
+	if s.device.Host != "192.0.2.99" {
+		t.Errorf("state.device.Host: got %q want 192.0.2.99", s.device.Host)
+	}
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if got := loaded.Devices["living-room"].Host; got != "192.0.2.99" {
+		t.Errorf("persisted Host: got %q want 192.0.2.99", got)
+	}
+}
+
+// TestRunYNCAWithRediscover_LookupFails: SSDP returns a non-cancel
+// error → *unreachableError, exit code 69.
+func TestRunYNCAWithRediscover_LookupFails(t *testing.T) {
+	stub := &stubLookup{
+		err: fmt.Errorf("device with UDN %q not found on LAN", "uuid:abc"),
+	}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+	op := func(_ *ynca.Client) error { return io.EOF }
+
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	var ue *unreachableError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *unreachableError, got %v (%T)", err, err)
+	}
+	if ue.alias != "living-room" || ue.udn != "uuid:abc" {
+		t.Errorf("unreachable fields: alias=%q udn=%q; want living-room / uuid:abc",
+			ue.alias, ue.udn)
+	}
+	if got := ErrorExitCode(err); got != 69 {
+		t.Errorf("ErrorExitCode: got %d want 69", got)
+	}
+}
+
+// TestRunYNCAWithRediscover_LookupCancelled: SSDP returns
+// context.Canceled (user hit Ctrl-C during scan) → *cancelledError,
+// exit 130 — not the 69 the user would otherwise get.
+func TestRunYNCAWithRediscover_LookupCancelled(t *testing.T) {
+	stub := &stubLookup{err: context.Canceled}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+	op := func(_ *ynca.Client) error { return io.EOF }
+
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	var ce *cancelledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cancelledError, got %v (%T)", err, err)
+	}
+	if got := ErrorExitCode(err); got != 130 {
+		t.Errorf("ErrorExitCode: got %d want 130", got)
+	}
+}
+
+// TestRunYNCAWithRediscover_ParentCtxCancelledDuringLookup: the stub
+// returns a non-cancel error but the parent ctx is already cancelled.
+// `ctx.Err() != nil` should drive the path that produces
+// *cancelledError, not unreachableError.
+func TestRunYNCAWithRediscover_ParentCtxCancelledDuringLookup(t *testing.T) {
+	stub := &stubLookup{err: errors.New("boom")}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	op := func(_ *ynca.Client) error { return io.EOF }
+	err := runYNCAWithRediscover(ctx, s, ynaTestTimeout, op)
+	var ce *cancelledError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *cancelledError when parent ctx is cancelled, got %v (%T)", err, err)
+	}
+	if got := ErrorExitCode(err); got != 130 {
+		t.Errorf("ErrorExitCode: got %d want 130", got)
+	}
+}
+
+// TestRunYNCAWithRediscover_NonTransportError: op returns an
+// application error (e.g. ErrUndefinedCommand) → no rediscover, error
+// passes through.
+func TestRunYNCAWithRediscover_NonTransportError(t *testing.T) {
+	stub := &stubLookup{}
+	stub.install(t)
+
+	appErr := &ynca.ErrUndefinedCommand{Line: "@UNDEFINED"}
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+
+	var calls int
+	op := func(_ *ynca.Client) error {
+		calls++
+		return appErr
+	}
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	if err != appErr {
+		t.Fatalf("expected exact appErr, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("op should run exactly once, got %d", calls)
+	}
+	if stub.calls != 0 {
+		t.Errorf("lookup should not be called, got %d", stub.calls)
+	}
+}
+
+// TestRunYNCAWithRediscover_RetryStillTransport: lookup succeeds and a
+// fresh client is built, but the retried op also fails with transport
+// — the second failure surfaces as *unreachableError (no third try).
+func TestRunYNCAWithRediscover_RetryStillTransport(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	stub := &stubLookup{
+		dev: discover.Device{Host: "192.0.2.99", UDN: "uuid:abc"},
+	}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+	if err := config.Save(s.cfg); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	var calls int
+	op := func(_ *ynca.Client) error {
+		calls++
+		return io.EOF
+	}
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	var ue *unreachableError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *unreachableError after retry, got %v (%T)", err, err)
+	}
+	if calls != 2 {
+		t.Errorf("op should run exactly twice (initial + one retry), got %d", calls)
+	}
+	if got := ErrorExitCode(err); got != 69 {
+		t.Errorf("ErrorExitCode: got %d want 69", got)
+	}
+}
+
+// TestRunYNCAWithRediscover_RetryNonTransport: lookup succeeds and the
+// retried op returns an application error (e.g. ErrRestricted) — the
+// error is returned as-is (NOT wrapped in unreachableError).
+func TestRunYNCAWithRediscover_RetryNonTransport(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+
+	stub := &stubLookup{
+		dev: discover.Device{Host: "192.0.2.99", UDN: "uuid:abc"},
+	}
+	stub.install(t)
+
+	s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+	if err := config.Save(s.cfg); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	restricted := &ynca.ErrRestricted{Line: "@RESTRICTED"}
+	var calls int
+	op := func(_ *ynca.Client) error {
+		calls++
+		if calls == 1 {
+			return io.EOF
+		}
+		return restricted
+	}
+	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
+	if err != restricted {
+		t.Fatalf("expected exact ErrRestricted from retry, got %v (%T)", err, err)
+	}
+	if calls != 2 {
+		t.Errorf("op should run twice, got %d", calls)
 	}
 }
