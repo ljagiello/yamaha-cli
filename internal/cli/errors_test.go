@@ -1,10 +1,16 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"testing"
+	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/ljagiello/yamaha-cli/internal/config"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -35,5 +41,85 @@ func TestErrorExitCode(t *testing.T) {
 				t.Errorf("ErrorExitCode(%v) = %d, want %d", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// realTransportError synthesises a genuine *yxc.transportError by
+// dialing a port that nothing is listening on, so wrapTransportError
+// tests run against the same value path production hits.
+func realTransportError(t *testing.T) error {
+	t.Helper()
+	// Use a guaranteed-closed local port. Pick high port + 0 second
+	// timeout via WithTimeout so the failure is quick.
+	c, err := yxc.New("127.0.0.1:1", yxc.WithTimeout(200*time.Millisecond))
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	_, err = c.Do(context.Background(), "main/getStatus", url.Values{})
+	if err == nil {
+		t.Fatal("expected transport error against closed port")
+	}
+	if !yxc.IsTransport(err) {
+		t.Fatalf("expected yxc transport error, got %T: %v", err, err)
+	}
+	return err
+}
+
+// TestWrapTransportError_RawWrappedToUnreachable proves raw yxc
+// transport errors get converted into the friendly *unreachableError
+// before printError sees them — fixing the leak of raw `net/http`
+// error strings (Client.Timeout / "Get http://..." / etc) to users.
+func TestWrapTransportError_RawWrappedToUnreachable(t *testing.T) {
+	t.Parallel()
+	root := &cobra.Command{Use: "yamaha"}
+	root.SetContext(context.Background())
+	setStateOnCmd(root, &state{
+		alias:  "living-room",
+		device: config.Device{Host: "192.0.2.1", UDN: "uuid:abc"},
+	})
+
+	tErr := realTransportError(t)
+	got := wrapTransportError(root, tErr)
+
+	var ue *unreachableError
+	if !errors.As(got, &ue) {
+		t.Fatalf("wrapped err = %T (%v), want *unreachableError", got, got)
+	}
+	if ue.alias != "living-room" || ue.udn != "uuid:abc" {
+		t.Errorf("unreachableError fields = (alias=%q, udn=%q), want (living-room, uuid:abc)", ue.alias, ue.udn)
+	}
+	// The cause must still be reachable for callers that unwrap.
+	if !errors.Is(got, tErr) {
+		t.Errorf("wrapped err does not unwrap to original transport error")
+	}
+	// And ErrorExitCode must still resolve to 69.
+	if code := ErrorExitCode(got); code != 69 {
+		t.Errorf("exit code = %d, want 69", code)
+	}
+}
+
+// TestWrapTransportError_LeavesUnreachableAlone confirms that an error
+// that's already an *unreachableError (e.g. from runWithRediscover)
+// isn't double-wrapped.
+func TestWrapTransportError_LeavesUnreachableAlone(t *testing.T) {
+	t.Parallel()
+	root := &cobra.Command{Use: "yamaha"}
+	root.SetContext(context.Background())
+	orig := &unreachableError{alias: "kitchen", udn: "uuid:xyz", cause: realTransportError(t)}
+	got := wrapTransportError(root, orig)
+	if got != orig {
+		t.Errorf("wrapTransportError mutated already-wrapped error: %v", got)
+	}
+}
+
+// TestWrapTransportError_NonTransportPassthrough confirms non-transport
+// errors fall through untouched.
+func TestWrapTransportError_NonTransportPassthrough(t *testing.T) {
+	t.Parallel()
+	root := &cobra.Command{Use: "yamaha"}
+	root.SetContext(context.Background())
+	plain := errors.New("nope")
+	if got := wrapTransportError(root, plain); got != plain {
+		t.Errorf("non-transport error mutated: %v", got)
 	}
 }

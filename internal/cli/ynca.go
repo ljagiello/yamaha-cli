@@ -57,42 +57,38 @@ func newYncaCmd() *cobra.Command {
 			if line == "" {
 				return newUsageError("ynca: empty command line")
 			}
-
-			host := s.device.Host
-			if host == "" {
+			if s.device.Host == "" {
 				return errors.New("ynca: no device host")
 			}
 
-			c, err := ynca.New(host, ynca.WithTimeout(yncaSendTimeout))
-			if err != nil {
-				return err
-			}
-			defer func() { _ = c.Close() }()
-
-			// Probe once per invocation so a non-YNCA device fails fast
-			// with a clear, actionable error instead of a vague timeout.
-			probeCtx, cancel := context.WithTimeout(ctx, yncaProbeTimeout)
-			_, perr := c.Probe(probeCtx)
-			cancel()
-			if perr != nil {
-				if errors.Is(perr, ynca.ErrUnsupported) {
-					// Map to a *yxc.Error so ErrorExitCode returns 70:
-					// the device was reachable but rejected the protocol
-					// handshake — same bucket as a YXC response_code
-					// failure, by user-facing semantics.
-					return &yxc.Error{
-						Code:    -1,
-						Message: fmt.Sprintf("device %s does not support YNCA (TCP/50000)", host),
-						Method:  "ynca/probe",
+			var reply string
+			err := runYNCAWithRediscover(ctx, s, yncaSendTimeout, func(c *ynca.Client) error {
+				// Probe once per invocation so a non-YNCA device fails
+				// fast with a clear, actionable error instead of a
+				// vague timeout.
+				probeCtx, cancel := context.WithTimeout(ctx, yncaProbeTimeout)
+				_, perr := c.Probe(probeCtx)
+				cancel()
+				if perr != nil {
+					if errors.Is(perr, ynca.ErrUnsupported) {
+						// Map to a *yxc.Error so ErrorExitCode returns 70:
+						// reachable but rejected the protocol handshake.
+						return &yxc.Error{
+							Code:    -1,
+							Message: fmt.Sprintf("device %s does not support YNCA (TCP/50000)", s.device.Host),
+							Method:  "ynca/probe",
+						}
 					}
+					return perr
 				}
-				// Probe timed out / network error: surface as transport so
-				// the exit-code mapper returns 69. The user can retry once
-				// they confirm the device is reachable.
-				return perr
-			}
 
-			reply, err := c.Send(ctx, line)
+				r, serr := c.Send(ctx, line)
+				if serr != nil {
+					return serr
+				}
+				reply = r
+				return nil
+			})
 			if err != nil {
 				return err
 			}

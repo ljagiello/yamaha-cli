@@ -7,12 +7,15 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/pkg/discover"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -231,6 +234,90 @@ func TestYnca_ContextCancel(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestYnca_RediscoversOnDHCPShift simulates the user-visible bug the
+// factory + runYNCAWithRediscover wiring closes: a configured device's
+// IP changes, the original host stops answering on TCP/50000, and a
+// stubbed SSDP scan reports the new IP. Previously `yamaha ynca` died
+// here with exit 69 while every YXC command transparently recovered.
+func TestYnca_RediscoversOnDHCPShift(t *testing.T) {
+	shrinkYNCATimeouts(t, 300*time.Millisecond, 300*time.Millisecond)
+
+	// Live fake at the "new" IP — answers probe + the user's command.
+	newAddr := startFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@SYS:VERSION=?":
+			return "@SYS:VERSION=2.87/1.81"
+		case "@MAIN:PWR=?":
+			return "@MAIN:PWR=On"
+		}
+		return "@UNDEFINED"
+	})
+
+	// Bind a port and immediately close it so the first dial gets
+	// connection-refused (the receiver "moved").
+	deadL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	deadAddr := deadL.Addr().String()
+	_ = deadL.Close()
+
+	// Stub the SSDP lookup to "find" the device at newAddr.
+	prevLookup := lookupByUDNFn
+	lookupByUDNFn = func(_ context.Context, _ string, _ time.Duration) (discover.Device, error) {
+		return discover.Device{Host: newAddr}, nil
+	}
+	t.Cleanup(func() { lookupByUDNFn = prevLookup })
+
+	// Redirect the config file so persistRediscoveredHost writes into a
+	// scratch dir; the package's config.Save path uses XDG/HOME.
+	scratch := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", scratch)
+	t.Setenv("HOME", scratch)
+	// Pre-seed the config so Save preserves the alias entry.
+	_ = os.MkdirAll(filepath.Join(scratch, "yamaha-cli"), 0o755)
+
+	cfg := &config.Config{
+		Devices: map[string]config.Device{
+			"living-room": {Host: deadAddr, UDN: "uuid:test-1"},
+		},
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := newYncaCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"@MAIN:PWR=?"})
+
+	yxcClient, err := yxc.New("127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:    cfg,
+		alias:  "living-room",
+		device: config.Device{Host: deadAddr, UDN: "uuid:test-1"},
+		zone:   "main",
+		client: yxcClient,
+	}
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, s))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute after rediscovery: %v", err)
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != "@MAIN:PWR=On" {
+		t.Errorf("stdout: got %q want %q", got, "@MAIN:PWR=On")
+	}
+	// Confirm the config was rewritten to the new IP.
+	if s.device.Host != newAddr {
+		t.Errorf("s.device.Host = %q, want %q (config not updated)", s.device.Host, newAddr)
 	}
 }
 

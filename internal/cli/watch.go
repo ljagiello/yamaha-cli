@@ -143,16 +143,11 @@ func resolveWatchDevices(cmd *cobra.Command, s *state) ([]watchDevice, error) {
 	return out, nil
 }
 
-// buildWatchClient creates a fresh *yxc.Client for one device alias,
-// mirroring the construction in setupState (timeout + optional debug
-// transport). We deliberately do not share s.client because each
-// Subscriber binds its own UDP port via WithEventPort.
+// buildWatchClient creates a fresh *yxc.Client for one device alias.
+// We deliberately do not share s.client because each Subscriber binds
+// its own UDP port via WithEventPort.
 func buildWatchClient(s *state, d config.Device) (*yxc.Client, error) {
-	opts := []yxc.Option{yxc.WithTimeout(5 * time.Second)}
-	if s.debug != nil && s.debug.Enabled() {
-		opts = append(opts, yxc.WithHTTPClient(newDebugHTTPClient(5*time.Second, s.debug)))
-	}
-	return yxc.New(d.Host, opts...)
+	return s.newYXCClient(d.Host)
 }
 
 // watchOne pumps events from a single device into out. It owns the

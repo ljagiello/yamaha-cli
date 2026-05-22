@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,11 +48,7 @@ func newLinkCmd() *cobra.Command {
 type linkClientFactory func(s *state, alias string, dev config.Device) (*yxc.Client, error)
 
 var defaultLinkClientFactory linkClientFactory = func(s *state, _ string, dev config.Device) (*yxc.Client, error) {
-	opts := []yxc.Option{yxc.WithTimeout(5 * time.Second)}
-	if s.debug != nil && s.debug.Enabled() {
-		opts = append(opts, yxc.WithHTTPClient(newDebugHTTPClient(5*time.Second, s.debug)))
-	}
-	return yxc.New(dev.Host, opts...)
+	return s.newYXCClient(dev.Host)
 }
 
 // linkClientFn is the package-level seam (overridable in tests).
