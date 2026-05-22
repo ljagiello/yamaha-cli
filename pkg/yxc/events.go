@@ -140,10 +140,10 @@ func (s *Subscriber) Subscribe(ctx context.Context, c *Client, zones []string) (
 		return nil, fmt.Errorf("yxc: Subscribe: unexpected LocalAddr type %T", pc.LocalAddr())
 	}
 
-	// Wire the bound port into the client so EventDo emits it.
-	c.mu.Lock()
-	c.eventPort = udpAddr.Port
-	c.mu.Unlock()
+	// Wire the bound port into the client so EventDo emits it. Routed
+	// through the locked accessor so concurrent Do/EventDo callers
+	// don't race on the field.
+	c.setEventPort(udpAddr.Port)
 
 	// Resolve the receiver's host once so the reader can drop UDP
 	// packets that don't originate from it. A LAN attacker who knows

@@ -28,24 +28,32 @@ const (
 	defaultRateLimit   = 100 * time.Millisecond
 	apiPathPrefix      = "/YamahaExtendedControl/v1/"
 	headerUserAgentFmt = "yamaha-cli/%s"
+	// maxResponseBody caps how many bytes we read from a 2xx YXC reply.
+	// The realistic ceiling is system/getFeatures at ~30 KiB; 512 KiB
+	// leaves headroom while preventing a misbehaving (or compromised)
+	// LAN peer from streaming gigabytes and OOMing the CLI.
+	maxResponseBody = 512 << 10
+	// maxErrorBody is the cap for draining a non-2xx response body so
+	// the connection can be reused. Kept small — we discard these bytes.
+	maxErrorBody = 16 << 10
 )
 
 // Client is a YXC HTTP client.
 //
 // Client is safe for concurrent use: methods may be called from multiple
-// goroutines simultaneously. Internal state is read-only after construction
-// except for an intra-process rate-limit timestamp, which is guarded by a
-// mutex.
+// goroutines simultaneously. Internal mutable state — the rate-limit
+// timestamp and the event-subscription UDP port — is guarded by a mutex;
+// callers must go through the accessor methods.
 //
 // Construct with New. Configure with Option values.
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 	userAgent  string
-	eventPort  int // 0 == disabled
 
-	mu       sync.Mutex
-	lastCall time.Time
+	mu        sync.Mutex
+	lastCall  time.Time
+	eventPort int // 0 == disabled
 }
 
 // Option configures a Client.
@@ -98,10 +106,31 @@ func WithUserAgent(ua string) Option {
 // WithEventPort sets the local UDP port the receiver will use to push
 // events. When set, EventDo requests will include `X-AppName: MusicCast`
 // and `X-AppPort: <port>` headers.
+//
+// Note: Subscriber.Subscribe overwrites this with the port it binds,
+// so pre-configuring is only useful for callers that drive EventDo
+// directly with their own UDP listener.
 func WithEventPort(port int) Option {
 	return func(c *Client) {
-		c.eventPort = port
+		c.setEventPort(port)
 	}
+}
+
+// setEventPort installs the UDP event port under the client mutex. Used
+// by WithEventPort and by Subscriber.Subscribe (which races with
+// concurrent Do/EventDo callers).
+func (c *Client) setEventPort(port int) {
+	c.mu.Lock()
+	c.eventPort = port
+	c.mu.Unlock()
+}
+
+// currentEventPort returns the registered event port (0 if unset)
+// under the client mutex.
+func (c *Client) currentEventPort() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.eventPort
 }
 
 // New constructs a Client targeting the given base URL.
@@ -145,7 +174,7 @@ func (c *Client) Do(ctx context.Context, method string, params url.Values) (json
 // event traffic back to the caller. Requires WithEventPort to have been
 // supplied.
 func (c *Client) EventDo(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
-	if c.eventPort == 0 {
+	if c.currentEventPort() == 0 {
 		return nil, errors.New("yxc: EventDo requires WithEventPort to be configured")
 	}
 	return c.do(ctx, method, params, true)
@@ -193,7 +222,7 @@ func (c *Client) doOnce(ctx context.Context, fullURL, method string, eventSubscr
 	req.Header.Set("User-Agent", c.userAgent)
 	if eventSubscription {
 		req.Header.Set("X-AppName", "MusicCast")
-		req.Header.Set("X-AppPort", fmt.Sprintf("%d", c.eventPort))
+		req.Header.Set("X-AppPort", fmt.Sprintf("%d", c.currentEventPort()))
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -212,11 +241,13 @@ func (c *Client) doOnce(ctx context.Context, fullURL, method string, eventSubscr
 	if resp.StatusCode != http.StatusOK {
 		// Drain a bit so the connection can be reused, but cap to avoid
 		// reading multi-MB error pages.
-		_, _ = io.CopyN(io.Discard, resp.Body, 1<<14)
+		_, _ = io.CopyN(io.Discard, resp.Body, maxErrorBody)
 		return nil, &httpStatusError{Status: resp.StatusCode, Method: method}
 	}
 
-	raw, err := io.ReadAll(resp.Body)
+	// Cap the body read so a misbehaving LAN peer can't stream
+	// arbitrary bytes and OOM the CLI within the request timeout.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		// EOF mid-body counts as transient — the device may have been
 		// momentarily unreachable.

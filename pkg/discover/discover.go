@@ -3,6 +3,7 @@ package discover
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -10,6 +11,13 @@ import (
 
 	ssdp "github.com/koron/go-ssdp"
 )
+
+// maxDescriptionBody caps how many bytes we read from a single SSDP
+// description XML response. The realistic ceiling for Yamaha receivers
+// is a few KiB; 1 MiB leaves room for verbose UPnP descriptions while
+// preventing a misbehaving LAN peer from streaming an unbounded XML
+// document and OOMing the CLI inside the discovery timeout window.
+const maxDescriptionBody = 1 << 20
 
 // mediaRendererST is the SSDP search target used to find UPnP
 // MediaRenderer devices, which is the surface Yamaha exposes for
@@ -160,7 +168,7 @@ func fetchOne(ctx context.Context, client *http.Client, location string) (Device
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return Device{}, false
 	}
-	desc, err := parseDescriptionXML(resp.Body)
+	desc, err := parseDescriptionXML(io.LimitReader(resp.Body, maxDescriptionBody))
 	if err != nil {
 		return Device{}, false
 	}
