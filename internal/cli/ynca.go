@@ -57,41 +57,51 @@ func newYncaCmd() *cobra.Command {
 			if line == "" {
 				return newUsageError("ynca: empty command line")
 			}
-
-			host := s.device.Host
-			if host == "" {
+			if s.device.Host == "" {
 				return errors.New("ynca: no device host")
 			}
 
-			c, err := ynca.New(host, ynca.WithTimeout(yncaSendTimeout))
+			// Phase 1: confirm reachability + YNCA support. Probe is a
+			// read (`@SYS:VERSION=?`), so DHCP rediscovery is free to
+			// retry it on a transport failure — replaying a read can't
+			// double-execute anything.
+			err := runYNCAWithRediscover(ctx, s, yncaSendTimeout, func(c *ynca.Client) error {
+				probeCtx, cancel := context.WithTimeout(ctx, yncaProbeTimeout)
+				defer cancel()
+				_, perr := c.Probe(probeCtx)
+				if perr != nil {
+					if errors.Is(perr, ynca.ErrUnsupported) {
+						// Map to a *yxc.Error so ErrorExitCode returns 70:
+						// reachable but rejected the protocol handshake.
+						return &yxc.Error{
+							Code:    -1,
+							Message: fmt.Sprintf("device %s does not support YNCA (TCP/50000)", s.device.Host),
+							Method:  "ynca/probe",
+						}
+					}
+					return perr
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+
+			// Phase 2: send the user's command exactly once. YNCA
+			// commands like `@MAIN:VOL=Up` are state-mutating and not
+			// idempotent — if a transport error fires AFTER bytes hit
+			// the wire (e.g. the reply was lost in transit), retrying
+			// would double-execute. Surface the transport error
+			// directly; Execute() will wrap it into "device not
+			// reachable" via wrapTransportError for the user.
+			//
+			// s.device.Host reflects any DHCP-rediscovered new IP that
+			// Phase 1 persisted.
+			c, err := s.newYNCAClient(s.device.Host, yncaSendTimeout)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = c.Close() }()
-
-			// Probe once per invocation so a non-YNCA device fails fast
-			// with a clear, actionable error instead of a vague timeout.
-			probeCtx, cancel := context.WithTimeout(ctx, yncaProbeTimeout)
-			_, perr := c.Probe(probeCtx)
-			cancel()
-			if perr != nil {
-				if errors.Is(perr, ynca.ErrUnsupported) {
-					// Map to a *yxc.Error so ErrorExitCode returns 70:
-					// the device was reachable but rejected the protocol
-					// handshake — same bucket as a YXC response_code
-					// failure, by user-facing semantics.
-					return &yxc.Error{
-						Code:    -1,
-						Message: fmt.Sprintf("device %s does not support YNCA (TCP/50000)", host),
-						Method:  "ynca/probe",
-					}
-				}
-				// Probe timed out / network error: surface as transport so
-				// the exit-code mapper returns 69. The user can retry once
-				// they confirm the device is reachable.
-				return perr
-			}
-
 			reply, err := c.Send(ctx, line)
 			if err != nil {
 				return err

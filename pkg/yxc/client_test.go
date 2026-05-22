@@ -613,3 +613,61 @@ func TestWithHTTPClient_DoesNotMutateCaller(t *testing.T) {
 		t.Errorf("caller's Timeout was mutated: got %v, want 0", caller.Timeout)
 	}
 }
+
+// TestDo_BodyCappedAtLimit guards the io.LimitReader in client.do: a
+// misbehaving (or compromised) LAN peer that streams an unbounded
+// payload must not OOM the CLI.
+//
+// The server here streams whitespace forever. With the LimitReader in
+// place the client reads up to maxResponseBody, then attempts to
+// unmarshal the (whitespace-only, never-terminated) buffer and returns
+// an "invalid JSON" error within a few hundred ms. Without the cap,
+// the client reads until Client.Timeout fires (2s) and returns
+// context.DeadlineExceeded wrapped as a transport error. We assert on
+// the *error type* so the test stays reliable across kernel TCP
+// buffer sizes.
+func TestDo_BodyCappedAtLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		flusher, _ := w.(http.Flusher)
+		chunk := make([]byte, 64*1024)
+		for i := range chunk {
+			chunk[i] = ' '
+		}
+		// Stream forever; the client's LimitReader must close the
+		// connection after maxResponseBody bytes. We return when Write
+		// errors (server-side detection of the closed conn).
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+
+	start := time.Now()
+	_, err := c.Do(context.Background(), "main/getStatus", nil)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected error from infinite-stream server, got nil after %v", elapsed)
+	}
+	// With the cap: invalid-JSON within ms.
+	// Without the cap: Client.Timeout fires (2s) -> transport error.
+	if IsTransport(err) {
+		t.Fatalf("got transport error after %v — body cap likely missing (server timed us out): %v", elapsed, err)
+	}
+	if !strings.Contains(err.Error(), "invalid JSON") {
+		t.Fatalf("expected invalid JSON error, got %v (elapsed=%v)", err, elapsed)
+	}
+	// Soft timing assertion: with the cap the read finishes well before
+	// Client.Timeout (2s). One second leaves headroom for slow CI.
+	if elapsed > 1*time.Second {
+		t.Errorf("Do took %v with body cap — expected sub-second short-circuit", elapsed)
+	}
+}

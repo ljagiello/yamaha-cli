@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -52,8 +51,15 @@ func stateFromCmd(cmd *cobra.Command) *state {
 }
 
 func setStateOnCmd(cmd *cobra.Command, s *state) {
-	ctx := context.WithValue(cmd.Context(), stateKey, s)
-	cmd.SetContext(ctx)
+	leafCtx := context.WithValue(cmd.Context(), stateKey, s)
+	cmd.SetContext(leafCtx)
+	// Also stash on root so error-mapping in Execute can reach the
+	// active alias/UDN. cobra's PersistentPreRunE fires on the leaf,
+	// so without this the rootCmd's context wouldn't see the state.
+	if root := cmd.Root(); root != nil && root != cmd {
+		rootCtx := context.WithValue(root.Context(), stateKey, s)
+		root.SetContext(rootCtx)
+	}
 }
 
 // Execute builds the cobra root, runs it, and returns the (possibly nil)
@@ -79,9 +85,42 @@ func Execute(ctx context.Context) error {
 	if errors.Is(err, context.Canceled) {
 		err = &cancelledError{cause: err}
 	}
+	// Wrap a raw transport error with our friendly unreachable message.
+	// runWithRediscover already wraps when DHCP-rediscover gave up; the
+	// --host / non-config code paths bypass that, so direct transport
+	// failures would otherwise surface raw net/http strings to the user.
+	err = wrapTransportError(rootCmd, err)
 	// Render the error to stderr (and to stdout in JSON/YAML modes).
 	printError(rootCmd, err)
 	return err
+}
+
+// wrapTransportError converts a raw yxc transport error into a
+// *unreachableError carrying the active alias/UDN, unless the error is
+// already an *unreachableError (the DHCP-rediscover path got there
+// first) or already a *cancelledError.
+func wrapTransportError(rootCmd *cobra.Command, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !yxc.IsTransport(err) {
+		return err
+	}
+	var already *unreachableError
+	if errors.As(err, &already) {
+		return err
+	}
+	var cancelled *cancelledError
+	if errors.As(err, &cancelled) {
+		return err
+	}
+	alias := ""
+	udn := ""
+	if s := stateFromCmd(rootCmd); s != nil {
+		alias = s.alias
+		udn = s.device.UDN
+	}
+	return &unreachableError{alias: alias, udn: udn, cause: err}
 }
 
 func newRootCmd() *cobra.Command {
@@ -227,25 +266,20 @@ func setupState(cmd *cobra.Command) error {
 		zone = "main"
 	}
 
-	clientOpts := []yxc.Option{yxc.WithTimeout(5 * time.Second)}
-	if dbg.Enabled() {
-		clientOpts = append(clientOpts, yxc.WithHTTPClient(newDebugHTTPClient(5*time.Second, dbg)))
-	}
-	client, err := yxc.New(dev.Host, clientOpts...)
-	if err != nil {
-		return err
-	}
-
 	s := &state{
 		cfg:          cfg,
 		alias:        alias,
 		device:       dev,
 		zone:         zone,
-		client:       client,
 		debug:        dbg,
 		refreshFeats: refreshFlag,
 		noWait:       noWaitFlag,
 	}
+	client, err := s.newYXCClient(dev.Host)
+	if err != nil {
+		return err
+	}
+	s.client = client
 	setStateOnCmd(cmd, s)
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/ljagiello/yamaha-cli/internal/config"
 	"github.com/ljagiello/yamaha-cli/internal/debuglog"
 	"github.com/ljagiello/yamaha-cli/pkg/discover"
+	"github.com/ljagiello/yamaha-cli/pkg/ynca"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -62,11 +63,7 @@ func runWithRediscover(ctx context.Context, s *state, op func(*yxc.Client) error
 	if err := persistRediscoveredHost(s, newDev.Host); err != nil {
 		return err
 	}
-	opts := []yxc.Option{yxc.WithTimeout(5 * time.Second)}
-	if s.debug != nil && s.debug.Enabled() {
-		opts = append(opts, yxc.WithHTTPClient(newDebugHTTPClient(5*time.Second, s.debug)))
-	}
-	newClient, cerr := yxc.New(newDev.Host, opts...)
+	newClient, cerr := s.newYXCClient(newDev.Host)
 	if cerr != nil {
 		return cerr
 	}
@@ -118,6 +115,73 @@ func persistRediscoveredHost(s *state, newHost string) error {
 	s.cfg.Devices[s.alias] = d
 	s.device = d
 	return config.Save(s.cfg)
+}
+
+// runYNCAWithRediscover is the YNCA twin of runWithRediscover. It runs
+// op against a freshly-built *ynca.Client. On a YNCA transport failure
+// AND when s was resolved via a config alias with a saved UDN, it runs
+// an SSDP scan, updates the config to the new IP, and retries op once
+// against a rebuilt client. This closes the user-visible gap where
+// `yamaha ynca …` died on a DHCP-shifted receiver while every YXC
+// command transparently recovered.
+//
+// timeout is forwarded to the YNCA client for both connect and per-Send.
+func runYNCAWithRediscover(ctx context.Context, s *state, timeout time.Duration, op func(*ynca.Client) error) error {
+	if op == nil {
+		return fmt.Errorf("cli: nil op")
+	}
+
+	run := func(host string) error {
+		c, err := s.newYNCAClient(host, timeout)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = c.Close() }()
+		return op(c)
+	}
+
+	err := run(s.device.Host)
+	if err == nil {
+		return nil
+	}
+	if !shouldRediscoverYNCA(s, err) {
+		return err
+	}
+
+	logRediscover(s.debug, s.alias, s.device.UDN)
+	newDev, lookupErr := lookupByUDNFn(ctx, s.device.UDN, rediscoverTimeout)
+	if lookupErr != nil {
+		if errors.Is(lookupErr, context.Canceled) || ctx.Err() != nil {
+			return &cancelledError{}
+		}
+		return &unreachableError{alias: s.alias, udn: s.device.UDN, cause: err}
+	}
+	if perr := persistRediscoveredHost(s, newDev.Host); perr != nil {
+		return perr
+	}
+	if err := run(newDev.Host); err != nil {
+		if ynca.IsTransport(err) {
+			return &unreachableError{alias: s.alias, udn: s.device.UDN, cause: err}
+		}
+		return err
+	}
+	return nil
+}
+
+// shouldRediscoverYNCA mirrors shouldRediscover for the YNCA path: only
+// rediscover on a transport-shaped error, and only when the active
+// device was resolved through a config alias that has a saved UDN.
+func shouldRediscoverYNCA(s *state, err error) bool {
+	if !ynca.IsTransport(err) {
+		return false
+	}
+	if s == nil || s.alias == "" {
+		return false
+	}
+	if s.device.UDN == "" {
+		return false
+	}
+	return true
 }
 
 func logRediscover(dbg *debuglog.Logger, alias, udn string) {

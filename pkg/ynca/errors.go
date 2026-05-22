@@ -1,8 +1,11 @@
 package ynca
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 )
 
 // ProtocolError is returned when the receiver sends a line that does
@@ -42,3 +45,51 @@ var ErrNoReply = errors.New("ynca: no reply within timeout")
 // ErrUnsupported is returned by Probe when the receiver is reachable
 // on TCP/50000 but does not speak YNCA.
 var ErrUnsupported = errors.New("ynca: device does not support YNCA")
+
+// IsTransport reports whether err looks like a network-layer failure —
+// dial timeouts, connection refused, EOF on a stale conn, etc. It
+// returns false for application-level outcomes (ErrUndefinedCommand,
+// ErrRestricted, ProtocolError), for "reached but wrong protocol"
+// (ErrUnsupported), for "no reply within timeout" (ErrNoReply), and
+// for context cancellation. The CLI uses this to decide whether to
+// trigger DHCP rediscovery.
+func IsTransport(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Application / known-non-transport outcomes — never rediscover.
+	// context.DeadlineExceeded implements net.Error (Timeout()==true), so
+	// the net.Error fallthrough below would otherwise classify a
+	// per-Send timeout as transport and trigger an SSDP scan on every
+	// slow command. The YXC twin (yxc.IsTransport) only matches its
+	// own *transportError, so this guard keeps the two classifiers
+	// symmetric.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrNoReply) {
+		return false
+	}
+	var und *ErrUndefinedCommand
+	if errors.As(err, &und) {
+		return false
+	}
+	var res *ErrRestricted
+	if errors.As(err, &res) {
+		return false
+	}
+	var pe *ProtocolError
+	if errors.As(err, &pe) {
+		return false
+	}
+	// Network shapes.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var oe *net.OpError
+	if errors.As(err, &oe) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne)
+}

@@ -191,6 +191,69 @@ func TestLookupByUDN_NoMatch(t *testing.T) {
 	}
 }
 
+// TestSearch_DescriptionBodyCappedAtLimit guards the io.LimitReader
+// around parseDescriptionXML in fetchOne. A malicious / misbehaving
+// LAN peer that streams an unbounded UPnP description body must not
+// hang the discovery scan or OOM the CLI.
+//
+// The server here streams `<friendlyName>aaaa...` forever. With the
+// cap the decoder hits EOF after maxDescriptionBody bytes, the XML
+// parse fails on the truncated element, fetchOne silently skips, and
+// Search returns 0 devices in milliseconds. Without the cap, the
+// decoder blocks until Client.Timeout fires (whatever we pass to
+// Search) — so we assert on elapsed time relative to the timeout.
+func TestSearch_DescriptionBodyCappedAtLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		// Open the XML, then stream into an unterminated element body
+		// forever. The LimitReader cap should fire well before the
+		// stream ends.
+		if _, err := w.Write([]byte(`<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><device><manufacturer>Yamaha Corporation</manufacturer><friendlyName>`)); err != nil {
+			return
+		}
+		flusher, _ := w.(http.Flusher)
+		chunk := make([]byte, 64*1024)
+		for i := range chunk {
+			chunk[i] = 'a'
+		}
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	loc := srv.URL + "/desc.xml"
+	withStubbedSearch(t, func(_ context.Context, _ string, _ time.Duration) ([]string, error) {
+		return []string{loc}, nil
+	})
+
+	// Generous timeout: with the cap the call returns in ms; without
+	// the cap it would block until Client.Timeout (= this value).
+	const searchTimeout = 5 * time.Second
+	start := time.Now()
+	devs, err := Search(context.Background(), searchTimeout)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Truncated XML is malformed, so fetchOne skips → 0 devices.
+	if len(devs) != 0 {
+		t.Errorf("expected 0 devices from malformed stream, got %d", len(devs))
+	}
+	// Soft cap: with the LimitReader fix, elapsed is well under 1s.
+	// Without the cap it would be ~searchTimeout. 2s leaves headroom
+	// for slow CI while still failing loudly on a regression.
+	if elapsed > 2*time.Second {
+		t.Errorf("Search took %v with body cap — expected sub-second short-circuit (cap=%d bytes, timeout=%v)",
+			elapsed, maxDescriptionBody, searchTimeout)
+	}
+}
+
 func TestSearch_SkipsBadLocations(t *testing.T) {
 	_, yamahaLoc := startDescServer(t, sampleYamahaXML)
 

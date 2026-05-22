@@ -7,12 +7,16 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/pkg/discover"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -231,6 +235,211 @@ func TestYnca_ContextCancel(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// TestYnca_RediscoversOnDHCPShift simulates the user-visible bug the
+// factory + runYNCAWithRediscover wiring closes: a configured device's
+// IP changes, the original host stops answering on TCP/50000, and a
+// stubbed SSDP scan reports the new IP. Previously `yamaha ynca` died
+// here with exit 69 while every YXC command transparently recovered.
+func TestYnca_RediscoversOnDHCPShift(t *testing.T) {
+	shrinkYNCATimeouts(t, 300*time.Millisecond, 300*time.Millisecond)
+
+	// Live fake at the "new" IP — answers probe + the user's command.
+	newAddr := startFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@SYS:VERSION=?":
+			return "@SYS:VERSION=2.87/1.81"
+		case "@MAIN:PWR=?":
+			return "@MAIN:PWR=On"
+		}
+		return "@UNDEFINED"
+	})
+
+	// Bind a port and immediately close it so the first dial gets
+	// connection-refused (the receiver "moved").
+	deadL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	deadAddr := deadL.Addr().String()
+	_ = deadL.Close()
+
+	// Stub the SSDP lookup to "find" the device at newAddr.
+	prevLookup := lookupByUDNFn
+	lookupByUDNFn = func(_ context.Context, _ string, _ time.Duration) (discover.Device, error) {
+		return discover.Device{Host: newAddr}, nil
+	}
+	t.Cleanup(func() { lookupByUDNFn = prevLookup })
+
+	// Redirect the config file so persistRediscoveredHost writes into a
+	// scratch dir; the package's config.Save path uses XDG/HOME.
+	scratch := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", scratch)
+	t.Setenv("HOME", scratch)
+	// Pre-seed the config so Save preserves the alias entry.
+	_ = os.MkdirAll(filepath.Join(scratch, "yamaha-cli"), 0o755)
+
+	cfg := &config.Config{
+		Devices: map[string]config.Device{
+			"living-room": {Host: deadAddr, UDN: "uuid:test-1"},
+		},
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := newYncaCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"@MAIN:PWR=?"})
+
+	yxcClient, err := yxc.New("127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:    cfg,
+		alias:  "living-room",
+		device: config.Device{Host: deadAddr, UDN: "uuid:test-1"},
+		zone:   "main",
+		client: yxcClient,
+	}
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, s))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute after rediscovery: %v", err)
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != "@MAIN:PWR=On" {
+		t.Errorf("stdout: got %q want %q", got, "@MAIN:PWR=On")
+	}
+	// Confirm the config was rewritten to the new IP.
+	if s.device.Host != newAddr {
+		t.Errorf("s.device.Host = %q, want %q (config not updated)", s.device.Host, newAddr)
+	}
+}
+
+// TestYnca_SendNotRetriedOnTransport guards the Phase-1/Phase-2 split:
+// Probe runs through DHCP rediscovery (it's idempotent), but Send runs
+// exactly once even on a transport-shaped failure. State-mutating YNCA
+// commands (`@MAIN:VOL=Up`) must not trigger rediscovery — if bytes
+// hit the wire but the reply was lost, retrying would double-execute.
+//
+// The fake server here replies normally to the probe, then closes the
+// connection on the first user-Send. The client sees io.EOF, which
+// ynca.IsTransport classifies as transport. With the split, Send
+// surfaces the EOF directly and no SSDP lookup runs. Without the split
+// (the pre-fix shape), runYNCAWithRediscover would have triggered an
+// SSDP scan and retried — verified by counting lookupCalls.
+func TestYnca_SendNotRetriedOnTransport(t *testing.T) {
+	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
+
+	// Custom fake YNCA: replies to probe, closes the conn on Send so
+	// the client sees io.EOF (transport-classified). Count the user-
+	// command bytes that hit the wire.
+	var sendBytes atomic.Int64
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var wg sync.WaitGroup
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				scanner.Buffer(make([]byte, 0, 4096), 64*1024)
+				scanner.Split(yncaSplitCRLF)
+				for scanner.Scan() {
+					line := scanner.Text()
+					if line == "@SYS:VERSION=?" {
+						_, _ = io.WriteString(c, "@SYS:VERSION=2.87/1.81\r\n")
+						continue
+					}
+					// Any other command: count + abruptly close to surface
+					// io.EOF on the client. Note ynca.Send has its own
+					// stale-conn redial, so the user-Send may legitimately
+					// hit the wire twice within a single Send call. We
+					// only care that no THIRD attempt happens after
+					// rediscovery.
+					if line == "@MAIN:VOL=Up" {
+						sendBytes.Add(1)
+					}
+					return
+				}
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = l.Close(); wg.Wait() })
+	addr := l.Addr().String()
+
+	// SSDP stub. With the split, Phase-2 Send should NEVER reach
+	// rediscovery. We track calls to verify.
+	var lookupCalls atomic.Int64
+	prevLookup := lookupByUDNFn
+	lookupByUDNFn = func(_ context.Context, _ string, _ time.Duration) (discover.Device, error) {
+		lookupCalls.Add(1)
+		return discover.Device{Host: addr, UDN: "uuid:test-1"}, nil
+	}
+	t.Cleanup(func() { lookupByUDNFn = prevLookup })
+
+	// Config-resolved state so DHCP rediscovery would otherwise be
+	// eligible (alias + UDN set).
+	scratch := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", scratch)
+	t.Setenv("HOME", scratch)
+	cfg := &config.Config{
+		Devices: map[string]config.Device{
+			"living-room": {Host: addr, UDN: "uuid:test-1"},
+		},
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	yxcClient, err := yxc.New("127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:    cfg,
+		alias:  "living-room",
+		device: config.Device{Host: addr, UDN: "uuid:test-1"},
+		zone:   "main",
+		client: yxcClient,
+	}
+
+	cmd := newYncaCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"@MAIN:VOL=Up"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, s))
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("expected transport error from Send (server closes conn), got nil")
+	}
+	// The KEY assertion: no SSDP rediscovery was triggered by the Send
+	// failure. With the old wrapping, runYNCAWithRediscover would have
+	// fired a lookup and retried.
+	if got := lookupCalls.Load(); got != 0 {
+		t.Errorf("SSDP lookup ran %d times after Send transport failure; want 0 (Send must not trigger rediscovery)", got)
+	}
+	// Bytes-on-wire bound: ynca.Send has internal stale-conn retry, so
+	// 1 or 2 attempts are both legitimate from a single Send call. What
+	// we forbid is a THIRD attempt that would only happen if a full
+	// rediscovery+retry kicked in.
+	if got := sendBytes.Load(); got > 2 {
+		t.Errorf("server saw @MAIN:VOL=Up %d times; want ≤2 (no rediscover-retry)", got)
 	}
 }
 

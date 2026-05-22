@@ -52,11 +52,11 @@ Highest priority wins. Flag/env pairs are adjacent.
 When the active device was config-resolved (alias != "") AND has a saved UDN:
 
 1. The first command run in a session starts at the saved IP.
-2. If a transport error occurs (after the in-Client retry — connection refused, no route, timeout, ECONNRESET):
-   - 3 s SSDP scan filtered by `manufacturer == "Yamaha Corporation"`.
-   - Match the response set by UDN.
-   - On hit: atomically update `devices.<alias>.host`, log `→ rediscover alias=… udn=…` (when `--debug`), retry the original command once.
-   - On miss: exit **69** with `device "<alias>" (UDN <udn>) not reachable`.
+2. If a transport error occurs — YXC HTTP (after the in-Client retry: connection refused, no route, timeout, ECONNRESET) or YNCA TCP (dial failure, EOF on stale conn) — the CLI:
+   - Runs a 3 s SSDP scan filtered by `manufacturer == "Yamaha Corporation"`.
+   - Matches the response set by UDN.
+   - On hit: atomically updates `devices.<alias>.host`, logs `→ rediscover alias=… udn=…` (when `--debug`), retries the original command once.
+   - On miss: exits **69** with `device "<alias>" (UDN <udn>) not reachable`.
 3. At most one rediscovery attempt per command.
 
 **Skipped when:**

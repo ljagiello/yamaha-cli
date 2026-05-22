@@ -327,7 +327,7 @@ func TestSubscribe_AllowsLegitimateSource(t *testing.T) {
 		select {
 		case ev := <-ch:
 			if ev.Kind == "subscribe" {
-				port = c.eventPort
+				port = c.currentEventPort()
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for subscribe event")
@@ -399,7 +399,7 @@ func TestSubscribe_DropsSpoofedSource(t *testing.T) {
 		select {
 		case ev := <-ch:
 			if ev.Kind == "subscribe" {
-				port = c.eventPort
+				port = c.currentEventPort()
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for subscribe event")
@@ -438,6 +438,67 @@ func TestSubscribe_DropsSpoofedSource(t *testing.T) {
 // TestResolveExpectedAddrs verifies the helper that builds the source-
 // IP allow-set returns the literal IP for IP-form base URLs and a
 // non-empty set for hostname-form URLs that resolve.
+// TestSubscribe_NoRaceWithConcurrentDo runs Subscribe (which writes the
+// event port) concurrently with a tight loop of Do calls (which now
+// reads the port under lock via currentEventPort). Must be clean under
+// `go test -race`; before the locking fix this tripped the race
+// detector reliably.
+func TestSubscribe_NoRaceWithConcurrentDo(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"response_code":0}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(srv.URL, WithTimeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Pre-stub the resolver so Subscribe doesn't try real DNS.
+	prev := resolveExpectedAddrsFn
+	resolveExpectedAddrsFn = func(*Client) map[netip.Addr]struct{} { return nil }
+	t.Cleanup(func() { resolveExpectedAddrsFn = prev })
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		deadline := time.After(200 * time.Millisecond)
+		for {
+			select {
+			case <-deadline:
+				return
+			default:
+				_, _ = c.Do(ctx, "main/getStatus", nil)
+			}
+		}
+	}()
+
+	sub := &Subscriber{BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}
+	ch, err := sub.Subscribe(ctx, c, []string{"main"})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	// Drain a few events so Subscribe gets through its initial run.
+	timeout := time.After(300 * time.Millisecond)
+	for done := false; !done; {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				done = true
+			}
+		case <-timeout:
+			done = true
+		}
+	}
+	cancel()
+	wg.Wait()
+}
+
 func TestResolveExpectedAddrs(t *testing.T) {
 	cases := []struct {
 		name    string

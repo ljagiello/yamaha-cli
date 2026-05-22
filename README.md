@@ -331,7 +331,7 @@ A capability probe runs once per invocation. Devices that don't speak YNCA fail 
 
 Receivers on home networks routinely get a new IP after DHCP renewals or router reboots. The CLI handles this transparently when the active device came from the config file (alias-resolved, with a saved UDN).
 
-On any HTTP transport error (after one in-client retry), the CLI runs a 3 s SSDP scan filtered by manufacturer = `Yamaha Corporation`, matches the saved UDN, atomically updates the config with the new IP, and retries the original command once. The user sees only the success result — pass `--debug` to see the rediscovery line.
+On any transport error — YXC HTTP or YNCA TCP — the CLI runs a 3 s SSDP scan filtered by manufacturer = `Yamaha Corporation`, matches the saved UDN, atomically updates the config with the new IP, and retries the original command once. The user sees only the success result — pass `--debug` to see the rediscovery line.
 
 **Skipped when:**
 

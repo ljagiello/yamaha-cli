@@ -143,12 +143,24 @@ func (c *Client) Send(ctx context.Context, line string) (string, error) {
 }
 
 // sendOnceLocked performs a single write+read cycle. Caller must hold c.mu.
-func (c *Client) sendOnceLocked(ctx context.Context, line string) (string, error) {
+func (c *Client) sendOnceLocked(ctx context.Context, line string) (reply string, err error) {
 	if c.conn == nil {
-		if err := c.dialLocked(ctx); err != nil {
-			return "", err
+		if derr := c.dialLocked(ctx); derr != nil {
+			return "", derr
 		}
 	}
+
+	// Any non-nil exit from this function leaves the connection in an
+	// undefined protocol state: half-written request, unread reply tail
+	// after ctx-cancel, or an in-flight reply still on the wire after
+	// ErrNoReply. Closing forces the next Send to redial with a clean
+	// socket. Registered before the watchdog-stop defer so it runs
+	// AFTER the watchdog has stopped touching c.conn (defers are LIFO).
+	defer func() {
+		if err != nil {
+			_ = c.closeLocked()
+		}
+	}()
 
 	// Drive read/write deadlines from ctx + timeout. A goroutine
 	// watches ctx.Done() and forces an immediate deadline so the
@@ -158,11 +170,11 @@ func (c *Client) sendOnceLocked(ctx context.Context, line string) (string, error
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
-	if err := c.conn.SetWriteDeadline(deadline); err != nil {
-		return "", err
+	if derr := c.conn.SetWriteDeadline(deadline); derr != nil {
+		return "", derr
 	}
-	if err := c.conn.SetReadDeadline(deadline); err != nil {
-		return "", err
+	if derr := c.conn.SetReadDeadline(deadline); derr != nil {
+		return "", derr
 	}
 
 	stop := make(chan struct{})
@@ -182,22 +194,22 @@ func (c *Client) sendOnceLocked(ctx context.Context, line string) (string, error
 		<-done
 	}()
 
-	if _, err := io.WriteString(c.conn, line+"\r\n"); err != nil {
+	if _, werr := io.WriteString(c.conn, line+"\r\n"); werr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
-		return "", err
+		return "", werr
 	}
 
 	if !c.scanner.Scan() {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}
-		if err := c.scanner.Err(); err != nil {
-			if isTimeout(err) {
+		if serr := c.scanner.Err(); serr != nil {
+			if isTimeout(serr) {
 				return "", ErrNoReply
 			}
-			return "", err
+			return "", serr
 		}
 		// EOF with no error: the peer closed the connection.
 		return "", io.EOF
