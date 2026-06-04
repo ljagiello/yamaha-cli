@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/pkg/ynca"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -112,9 +113,30 @@ func ErrorExitCode(err error) int {
 	if yxc.IsTransport(err) {
 		return 69
 	}
+	// YNCA transport failures (dial/connection errors on TCP/50000) are
+	// unreachable too — map them to 69 like their YXC twin instead of
+	// letting them fall through to the generic exit 1.
+	if ynca.IsTransport(err) {
+		return 69
+	}
 	// YXC response_code != 0.
 	if _, ok := yxc.AsYXC(err); ok {
 		return 70
+	}
+	// Legacy YNCA control replies. @UNDEFINED means the command does not
+	// exist on this device — unsupported feature, same class as a YXC
+	// non-zero response_code → 70. @RESTRICTED means the command is valid
+	// but not allowed in the current device state (e.g. the zone is in
+	// standby); that's a transient, user-fixable condition, so it maps to
+	// EX_TEMPFAIL (75) to signal "retry after fixing the device state"
+	// distinctly from an outright-unsupported command.
+	var yUndef *ynca.ErrUndefinedCommand
+	if errors.As(err, &yUndef) {
+		return 70
+	}
+	var yRestricted *ynca.ErrRestricted
+	if errors.As(err, &yRestricted) {
+		return 75
 	}
 	// Validation / power-on timeout / generic.
 	var ve *ValidationError

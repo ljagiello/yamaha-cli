@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/pkg/ynca"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -30,6 +32,11 @@ func TestErrorExitCode(t *testing.T) {
 		{"unreachable", &unreachableError{alias: "living-room", udn: "uuid:x"}, 69},
 		{"yxc-code-5", &yxc.Error{Code: 5, Message: "device not ready"}, 70},
 		{"yxc-code-6", &yxc.Error{Code: 6, Message: "not found"}, 70},
+		{"ynca-undefined", &ynca.ErrUndefinedCommand{Line: "@MAIN:FOO=?"}, 70},
+		{"ynca-undefined-wrapped", fmt.Errorf("ctx: %w", &ynca.ErrUndefinedCommand{Line: "@MAIN:FOO=?"}), 70},
+		{"ynca-restricted", &ynca.ErrRestricted{Line: "@MAIN:VOL=Up"}, 75},
+		{"ynca-restricted-wrapped", fmt.Errorf("ctx: %w", &ynca.ErrRestricted{Line: "@MAIN:VOL=Up"}), 75},
+		{"ynca-transport", realYNCATransportError(t), 69},
 		{"cancelled", &cancelledError{}, 130},
 		{"wrapped-power-on-timeout", fmt.Errorf("foo: %w", &PowerOnTimeoutError{}), 1},
 		{"unknown", errors.New("something exploded"), 1},
@@ -42,6 +49,61 @@ func TestErrorExitCode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFriendlyYNCAError verifies the CLI rewrites @UNDEFINED/@RESTRICTED
+// into actionable messages while preserving the typed cause so the
+// exit-code mapping (70 / 75) still applies through the wrap.
+func TestFriendlyYNCAError(t *testing.T) {
+	t.Run("undefined", func(t *testing.T) {
+		base := &ynca.ErrUndefinedCommand{Line: "@MAIN:FOO=?"}
+		got := friendlyYNCAError("@MAIN:FOO=?", base)
+		if !strings.Contains(got.Error(), "not supported") {
+			t.Errorf("message = %q, want it to mention 'not supported'", got.Error())
+		}
+		var u *ynca.ErrUndefinedCommand
+		if !errors.As(got, &u) {
+			t.Error("wrapped error no longer unwraps to *ynca.ErrUndefinedCommand")
+		}
+		if code := ErrorExitCode(got); code != 70 {
+			t.Errorf("exit code = %d, want 70", code)
+		}
+	})
+	t.Run("restricted", func(t *testing.T) {
+		base := &ynca.ErrRestricted{Line: "@MAIN:VOL=Up"}
+		got := friendlyYNCAError("@MAIN:VOL=Up", base)
+		if !strings.Contains(got.Error(), "not allowed right now") {
+			t.Errorf("message = %q, want it to mention 'not allowed right now'", got.Error())
+		}
+		if code := ErrorExitCode(got); code != 75 {
+			t.Errorf("exit code = %d, want 75", code)
+		}
+	})
+	t.Run("passthrough", func(t *testing.T) {
+		base := errors.New("some transport thing")
+		if got := friendlyYNCAError("@MAIN:PWR=?", base); got != base {
+			t.Errorf("non-control error mutated: %v", got)
+		}
+	})
+}
+
+// realYNCATransportError synthesises a genuine YNCA transport error by
+// dialing a closed port, so the exit-code mapping runs against the same
+// value path production hits.
+func realYNCATransportError(t *testing.T) error {
+	t.Helper()
+	c, err := ynca.New("127.0.0.1:1", ynca.WithTimeout(200*time.Millisecond))
+	if err != nil {
+		t.Fatalf("ynca.New: %v", err)
+	}
+	_, err = c.Send(context.Background(), "@SYS:VERSION=?")
+	if err == nil {
+		t.Fatal("expected ynca transport error against closed port")
+	}
+	if !ynca.IsTransport(err) {
+		t.Fatalf("expected ynca transport error, got %T: %v", err, err)
+	}
+	return err
 }
 
 // realTransportError synthesises a genuine *yxc.transportError by

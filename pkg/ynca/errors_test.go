@@ -58,6 +58,15 @@ func TestIsTransport(t *testing.T) {
 		{"wrapped dial OpError", fmt.Errorf("ynca: dial 1.2.3.4:50000: %w",
 			&net.OpError{Op: "dial", Err: errors.New("no route to host")}), true},
 
+		// DialError — a dial failure is always transport, even when the
+		// underlying cause is a timeout that errors.Is-matches
+		// context.DeadlineExceeded (the powered-off-receiver case).
+		{"DialError (refused)", &DialError{Addr: "1.2.3.4:50000",
+			Err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}, true},
+		{"DialError (timeout)", &DialError{Addr: "1.2.3.4:50000", Err: context.DeadlineExceeded}, true},
+		// ...but a user cancel mid-dial is still not transport.
+		{"DialError (user cancel)", &DialError{Addr: "1.2.3.4:50000", Err: context.Canceled}, false},
+
 		// Custom net.Error impl that doesn't match the io / *net.OpError
 		// branches above — exercises the final errors.As(err, &net.Error)
 		// fallthrough. Without this case, the fallthrough could be

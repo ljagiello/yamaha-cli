@@ -45,7 +45,7 @@ func newStatusCmd() *cobra.Command {
 func buildStatusPayload(ctx context.Context, s *state, st *yxc.Status) map[string]any {
 	out := map[string]any{
 		"zone":   s.zone,
-		"power":  st.Power,
+		"power":  string(st.Power),
 		"input":  st.Input,
 		"mute":   st.Mute,
 		"volume": st.Volume,
@@ -65,25 +65,12 @@ func buildStatusPayload(ctx context.Context, s *state, st *yxc.Status) map[strin
 	if st.ActualVolume != nil {
 		out["volume_db"] = st.ActualVolume.Value
 	} else {
-		out["volume_db"] = volumeIntToDB(feats, s.zone, st.Volume)
+		// feats may be nil here (a best-effort features fetch can fail);
+		// VolumeIntToDB is nil-safe and falls back to the RX-V dB scale.
+		out["volume_db"] = feats.VolumeIntToDB(s.zone, st.Volume)
 	}
 	out["volume_percent"] = volumePercent(feats, s.zone, st.Volume)
 	return out
-}
-
-// volumeIntToDB converts the YXC integer volume to dB.
-//
-// Prefers range_step{id:"actual_volume_db"} for (min, step) — keeps the
-// conversion correct on receivers with a different baseline (e.g. some
-// A-series go to -99.5). Falls back to the RX-V/A integer-step convention
-// (-80.5 baseline, 0.5 dB step) only when features are unavailable.
-func volumeIntToDB(feats *yxc.Features, zone string, n int) float64 {
-	if feats != nil {
-		if dbMin, _, dbStep, ok := feats.VolumeRangeDB(zone); ok {
-			return dbMin + dbStep*float64(n)
-		}
-	}
-	return -80.5 + 0.5*float64(n)
 }
 
 // volumePercent converts the integer volume to a 0..100 percentage using

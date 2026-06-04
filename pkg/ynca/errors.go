@@ -8,6 +8,20 @@ import (
 	"net"
 )
 
+// DialError wraps a failure to establish the TCP connection to the
+// receiver. It is always a transport failure (the host is unreachable),
+// which IsTransport reports as such even when the underlying cause is a
+// timeout — a dial timeout errors.Is-matches context.DeadlineExceeded and
+// would otherwise be indistinguishable from a slow-but-reachable
+// per-command deadline (which is deliberately NOT treated as transport).
+type DialError struct {
+	Addr string
+	Err  error
+}
+
+func (e *DialError) Error() string { return fmt.Sprintf("ynca: dial %s: %v", e.Addr, e.Err) }
+func (e *DialError) Unwrap() error { return e.Err }
+
 // ProtocolError is returned when the receiver sends a line that does
 // not conform to the `@SUBUNIT:FUNCTION=value` grammar.
 type ProtocolError struct {
@@ -57,14 +71,28 @@ func IsTransport(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Application / known-non-transport outcomes — never rediscover.
-	// context.DeadlineExceeded implements net.Error (Timeout()==true), so
-	// the net.Error fallthrough below would otherwise classify a
-	// per-Send timeout as transport and trigger an SSDP scan on every
-	// slow command. The YXC twin (yxc.IsTransport) only matches its
-	// own *transportError, so this guard keeps the two classifiers
-	// symmetric.
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// User cancellation is never transport — don't rediscover on Ctrl-C,
+	// even if it landed mid-dial.
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	// A dial failure means the host is unreachable: always transport, even
+	// when the underlying cause is a timeout. A dial timeout
+	// errors.Is-matches context.DeadlineExceeded, so without this explicit
+	// check it would be excluded by the guard below and a powered-off /
+	// unreachable receiver would surface as a generic exit 1 instead of
+	// the documented "device not reachable" (exit 69).
+	var de *DialError
+	if errors.As(err, &de) {
+		return true
+	}
+	// A per-command deadline against a reachable-but-slow device is NOT
+	// transport. context.DeadlineExceeded implements net.Error
+	// (Timeout()==true), so the net.Error fallthrough below would
+	// otherwise classify it as transport and trigger an SSDP scan on every
+	// slow command. The YXC twin (yxc.IsTransport) only matches its own
+	// *transportError, so this guard keeps the two classifiers symmetric.
+	if errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrNoReply) {

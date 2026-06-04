@@ -201,7 +201,7 @@ func TestSubscribe_RejectsInvalid(t *testing.T) {
 	if _, err := sub.Subscribe(context.Background(), c, nil); err == nil {
 		t.Error("expected error for empty zones")
 	}
-	if _, err := sub.Subscribe(context.Background(), c, []string{"zone3"}); err == nil {
+	if _, err := sub.Subscribe(context.Background(), c, []string{"zone9"}); err == nil {
 		t.Error("expected error for invalid zone")
 	}
 }

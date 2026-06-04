@@ -98,9 +98,9 @@ func newLinkCreateCmd() *cobra.Command {
 					return fmt.Errorf("link create: %s: getDistributionInfo: %w", f.alias, derr)
 				}
 				switch di.Role {
-				case "server":
+				case yxc.DistRoleServer:
 					return newUsageError("link create: %q is already a group server; dissolve it first", f.alias)
-				case "client":
+				case yxc.DistRoleClient:
 					return newUsageError("link create: %q is already a group client (group_id=%s); dissolve the existing group first", f.alias, di.GroupID)
 				}
 			}
@@ -210,7 +210,7 @@ func newLinkDissolveCmd() *cobra.Command {
 			// setServerInfo type=remove + stopDistribution against a
 			// device that has no server role. Tell the user to dissolve
 			// from the actual leader instead.
-			if di.Role != "server" {
+			if di.Role != yxc.DistRoleServer {
 				return newUsageError("link dissolve: %q is a group %s (group_id=%s), not the server; dissolve from the leader instead", leader.alias, di.Role, di.GroupID)
 			}
 

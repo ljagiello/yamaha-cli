@@ -252,9 +252,9 @@ func resolveTunerBand(ctx context.Context, s *state, flag string) (string, error
 		return nil
 	})
 	if st != nil {
-		switch strings.ToLower(st.Band) {
+		switch strings.ToLower(string(st.Band)) {
 		case "fm", "am":
-			return strings.ToLower(st.Band), nil
+			return strings.ToLower(string(st.Band)), nil
 		}
 	}
 	return "fm", nil
@@ -335,9 +335,9 @@ func formatTunerFreq(band string, n int) string {
 // idle but AM has a saved tuning" without a second call.
 func buildTunerStatusPayload(st *yxc.TunerStatus) map[string]any {
 	out := map[string]any{
-		"band": st.Band,
+		"band": string(st.Band),
 	}
-	switch strings.ToLower(st.Band) {
+	switch strings.ToLower(string(st.Band)) {
 	case "fm":
 		out["freq"] = st.FM.Freq
 		out["freq_human"] = formatTunerFreq("fm", st.FM.Freq)
@@ -363,12 +363,12 @@ func buildTunerPresetsPayload(info *yxc.TunerPresetInfo) []map[string]any {
 	rows := make([]map[string]any, 0, len(info.PresetInfo))
 	for _, p := range info.PresetInfo {
 		row := map[string]any{
-			"band": p.Band,
+			"band": string(p.Band),
 			"num":  p.Number,
 			"freq": p.Freq,
 		}
 		if p.Freq > 0 {
-			row["freq_human"] = formatTunerFreq(strings.ToLower(p.Band), p.Freq)
+			row["freq_human"] = formatTunerFreq(strings.ToLower(string(p.Band)), p.Freq)
 		}
 		rows = append(rows, row)
 	}

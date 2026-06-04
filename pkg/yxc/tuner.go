@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // TunerStatus mirrors `tuner/getPlayInfo`.
@@ -14,8 +15,8 @@ import (
 // AM/FM block carries frequency and preset state. Frequency units differ
 // per band — see SetTunerFreq for the convention used by the receiver.
 type TunerStatus struct {
-	ResponseCode int    `json:"response_code"`
-	Band         string `json:"band"`
+	ResponseCode int  `json:"response_code"`
+	Band         Band `json:"band"` // fm | am | dab (see enums.go)
 	AM           struct {
 		Freq   int `json:"freq"`
 		Preset int `json:"preset"`
@@ -29,9 +30,9 @@ type TunerStatus struct {
 
 // TunerPreset is one entry of `tuner/getPresetInfo`.
 type TunerPreset struct {
-	Band   string `json:"band"`
-	Number int    `json:"number"`
-	Freq   int    `json:"freq,omitempty"`
+	Band   Band `json:"band"`
+	Number int  `json:"number"`
+	Freq   int  `json:"freq,omitempty"`
 }
 
 // TunerPresetInfo mirrors `tuner/getPresetInfo`.
@@ -40,15 +41,12 @@ type TunerPresetInfo struct {
 	PresetInfo   []TunerPreset `json:"preset_info"`
 }
 
-// validTunerBand normalises a tuner band identifier.
-func validTunerBand(band string) (string, error) {
-	switch band {
-	case "fm", "FM", "Fm":
-		return "fm", nil
-	case "am", "AM", "Am":
-		return "am", nil
-	case "dab", "DAB", "Dab":
-		return "dab", nil
+// validTunerBand normalises a tuner band identifier (case-insensitive) to
+// one of the modelled Band constants.
+func validTunerBand(band string) (Band, error) {
+	switch b := Band(strings.ToLower(band)); b {
+	case BandFM, BandAM, BandDAB:
+		return b, nil
 	default:
 		return "", fmt.Errorf("yxc: invalid tuner band %q (want fm|am|dab)", band)
 	}
@@ -88,7 +86,7 @@ func (c *Client) SetTunerFreq(ctx context.Context, band string, freqHz int) erro
 		return fmt.Errorf("yxc: SetTunerFreq: freq must be > 0, got %d", freqHz)
 	}
 	v := url.Values{}
-	v.Set("band", b)
+	v.Set("band", string(b))
 	v.Set("tuning", "direct")
 	v.Set("num", strconv.Itoa(freqHz))
 	_, err = c.Do(ctx, "tuner/setFreq", v)
@@ -111,7 +109,7 @@ func (c *Client) RecallTunerPreset(ctx context.Context, zone, band string, num i
 	}
 	v := url.Values{}
 	v.Set("zone", z)
-	v.Set("band", b)
+	v.Set("band", string(b))
 	v.Set("num", strconv.Itoa(num))
 	_, err = c.Do(ctx, "tuner/recallPreset", v)
 	return err
@@ -124,7 +122,7 @@ func (c *Client) GetTunerPresetInfo(ctx context.Context, band string) (*TunerPre
 		return nil, err
 	}
 	v := url.Values{}
-	v.Set("band", b)
+	v.Set("band", string(b))
 	raw, err := c.Do(ctx, "tuner/getPresetInfo", v)
 	if err != nil {
 		return nil, err

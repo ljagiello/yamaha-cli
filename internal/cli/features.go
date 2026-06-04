@@ -4,11 +4,53 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
+
+// validateAgainstFeatures resolves the active device's features (cache
+// hit, on-disk fetch, or one forced refresh on a miss — covering the
+// "user upgraded firmware mid-week" case) and verifies that value appears
+// in the candidate list returned by listFn for the active zone. On a
+// genuine miss it returns a *ValidationError carrying DidYouMean
+// suggestions (exit 1).
+//
+// It returns the resolved *yxc.Features so callers that need them — e.g.
+// `input`, which hands them to SetInput for the auto-prepareInputChange
+// behaviour — can reuse the result instead of fetching twice. kind is the
+// human label used in the error ("input", "sound program", "surround
+// decoder").
+//
+// This collapses the three near-identical validate* helpers (input /
+// sound / decoder) that previously each open-coded the same
+// load→check→refresh-on-miss→DidYouMean dance.
+func validateAgainstFeatures(
+	ctx context.Context, s *state, kind, value string,
+	listFn func(*yxc.Features, string) []string,
+) (*yxc.Features, error) {
+	feats, err := loadFeatures(ctx, s, s.refreshFeats)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(listFn(feats, s.zone), value) {
+		return feats, nil
+	}
+	feats, err = loadFeatures(ctx, s, true)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(listFn(feats, s.zone), value) {
+		return feats, nil
+	}
+	return feats, &ValidationError{
+		Kind:        kind,
+		Unknown:     value,
+		Suggestions: yxc.DidYouMean(value, listFn(feats, s.zone), 3),
+	}
+}
 
 // featureLoader wraps a per-process memo around the
 // yxc.FeaturesCache.LoadOrFetch flow so subcommands can call

@@ -443,6 +443,177 @@ func TestYnca_SendNotRetriedOnTransport(t *testing.T) {
 	}
 }
 
+// lastMutation records the most recent non-probe, non-fence line the fake
+// server received, so the typed-subcommand tests can assert what got sent.
+type lastMutation struct {
+	mu   sync.Mutex
+	line string
+}
+
+func (l *lastMutation) record(line string) {
+	if line == "@SYS:VERSION=?" {
+		return
+	}
+	l.mu.Lock()
+	l.line = line
+	l.mu.Unlock()
+}
+
+func (l *lastMutation) get() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.line
+}
+
+// TestYncaSubcmd_PowerOn routes `ynca power on` through the parent and
+// asserts the absolute PWR set reaches the device.
+func TestYncaSubcmd_PowerOn(t *testing.T) {
+	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
+	var last lastMutation
+	addr := startFakeYNCA(t, func(line string) string {
+		if line == "@SYS:VERSION=?" {
+			return "@SYS:VERSION=2.87/1.81"
+		}
+		last.record(line)
+		return line // echo the set
+	})
+
+	cmd := newYncaCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"power", "on"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, addr)))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := last.get(); got != "@MAIN:PWR=On" {
+		t.Errorf("server saw %q, want @MAIN:PWR=On", got)
+	}
+}
+
+// TestYncaSubcmd_VolumeRoundsToGrid asserts an absolute dB value is
+// rounded onto the YNCA 0.5 dB grid before it's sent.
+func TestYncaSubcmd_VolumeRoundsToGrid(t *testing.T) {
+	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
+	var last lastMutation
+	addr := startFakeYNCA(t, func(line string) string {
+		if line == "@SYS:VERSION=?" {
+			return "@SYS:VERSION=2.87/1.81"
+		}
+		last.record(line)
+		return line
+	})
+
+	cmd := newYncaCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	// Negative positionals need the `--` terminator (a cobra/pflag
+	// constraint shared with the YXC `volume` command).
+	cmd.SetArgs([]string{"volume", "--", "-30.3"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, addr)))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := last.get(); got != "@MAIN:VOL=-30.5" {
+		t.Errorf("server saw %q, want @MAIN:VOL=-30.5", got)
+	}
+}
+
+// TestYncaSubcmd_Status drives `ynca status` and checks the decoded
+// payload reaches stdout.
+func TestYncaSubcmd_Status(t *testing.T) {
+	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
+	addr := startFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@SYS:VERSION=?":
+			return "@SYS:VERSION=2.87/1.81"
+		case "@MAIN:BASIC=?":
+			return "@MAIN:PWR=On\r\n@MAIN:VOL=-30.5\r\n@MAIN:MUTE=Off\r\n@MAIN:INP=HDMI2\r\n@MAIN:SOUNDPRG=Standard"
+		}
+		return "@UNDEFINED"
+	})
+
+	cmd := newYncaCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"status"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, addr)))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"HDMI2", "Standard", "on"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status output missing %q: %s", want, out)
+		}
+	}
+}
+
+// TestYncaSubcmd_RestrictedExit75 asserts a typed subcommand surfaces a
+// @RESTRICTED set as exit 75.
+func TestYncaSubcmd_RestrictedExit75(t *testing.T) {
+	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
+	addr := startFakeYNCA(t, func(line string) string {
+		if line == "@SYS:VERSION=?" {
+			return "@SYS:VERSION=2.87/1.81"
+		}
+		return "@RESTRICTED"
+	})
+
+	cmd := newYncaCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"input", "HDMI2"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, addr)))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected @RESTRICTED error")
+	}
+	if got := ErrorExitCode(err); got != 75 {
+		t.Errorf("exit code = %d, want 75", got)
+	}
+}
+
+// TestYncaSubcmd_Repl feeds two commands and exits; both replies must
+// appear on stdout, proving the persistent-connection loop works.
+func TestYncaSubcmd_Repl(t *testing.T) {
+	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
+	addr := startFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@SYS:VERSION=?":
+			return "@SYS:VERSION=2.87/1.81"
+		case "@MAIN:PWR=?":
+			return "@MAIN:PWR=On"
+		case "@MAIN:INP=?":
+			return "@MAIN:INP=HDMI2"
+		}
+		return "@UNDEFINED"
+	})
+
+	cmd := newYncaCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(strings.NewReader("@MAIN:PWR=?\n@MAIN:INP=?\nexit\n"))
+	cmd.SetArgs([]string{"repl"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, addr)))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"@MAIN:PWR=On", "@MAIN:INP=HDMI2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("repl output missing %q: %s", want, out)
+		}
+	}
+}
+
 // TestYnca_EmptyArg rejects an empty command string with exit code 2.
 func TestYnca_EmptyArg(t *testing.T) {
 	t.Parallel()

@@ -14,7 +14,7 @@ import (
 type DistributionInfo struct {
 	ResponseCode      int           `json:"response_code"`
 	GroupID           string        `json:"group_id,omitempty"`
-	Role              string        `json:"role,omitempty"` // "server" | "client" | "none"
+	Role              DistRole      `json:"role,omitempty"` // server | client | none (see enums.go)
 	ServerZone        string        `json:"server_zone,omitempty"`
 	ClientList        []ClientEntry `json:"client_list,omitempty"`
 	BuildDevice       string        `json:"build_device,omitempty"`

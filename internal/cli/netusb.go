@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -220,6 +221,24 @@ func mapPlaybackVerb(verb string) (yxc.Playback, error) {
 	return "", newUsageError("unknown netusb verb %q", verb)
 }
 
+// formatPlaybackClock renders a playback position as a human clock:
+// "m:ss" under an hour, "h:mm:ss" at or above. A zero duration (no
+// elapsed time, or an input that doesn't report a length) renders as ""
+// so the table/JSON output stays clean rather than showing "0:00".
+func formatPlaybackClock(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	total := int(d / time.Second)
+	h := total / 3600
+	m := (total % 3600) / 60
+	sec := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, sec)
+	}
+	return fmt.Sprintf("%d:%02d", m, sec)
+}
+
 // buildPlayInfoPayload renders a *yxc.PlayInfo as a stable map. Empty
 // metadata fields (artist/album/track) are dropped to keep the table mode
 // readable when the input doesn't carry that data (e.g. internet radio
@@ -230,11 +249,15 @@ func buildPlayInfoPayload(pi *yxc.PlayInfo) map[string]any {
 	}
 	out := map[string]any{
 		"input":      pi.Input,
-		"playback":   pi.Playback,
-		"repeat":     pi.Repeat,
-		"shuffle":    pi.Shuffle,
+		"playback":   string(pi.Playback),
+		"repeat":     string(pi.Repeat),
+		"shuffle":    string(pi.Shuffle),
 		"play_time":  pi.PlayTime,
 		"total_time": pi.TotalTime,
+		// Human-readable mm:ss derived from the raw seconds. Total is
+		// omitted-as-"" when the input reports no length (e.g. a stream).
+		"play_time_human":  formatPlaybackClock(pi.Elapsed()),
+		"total_time_human": formatPlaybackClock(pi.Total()),
 	}
 	if pi.Artist != "" {
 		out["artist"] = pi.Artist
