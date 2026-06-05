@@ -259,8 +259,16 @@ func TestParsePowerAndMute(t *testing.T) {
 	if _, err := ParsePower("napping"); err == nil {
 		t.Error("ParsePower(napping): want error")
 	}
-	if !parseMute("On") || !parseMute("Att -20 dB") || parseMute("Off") {
-		t.Error("parseMute mismatch")
+	if !ParseMute("On").Muted() || !ParseMute("Att -20 dB").Muted() || ParseMute("Off").Muted() {
+		t.Error("ParseMute.Muted mismatch")
+	}
+	// The attenuation states must survive as distinct typed values, not
+	// collapse to a bare On — that's the whole point of the tri-state.
+	if ParseMute("Att -40 dB") != MuteAtt40 {
+		t.Errorf("ParseMute(Att -40 dB) = %q, want %q", ParseMute("Att -40 dB"), MuteAtt40)
+	}
+	if ParseMute("nonsense") != MuteUnknown {
+		t.Errorf("ParseMute(nonsense) = %q, want %q", ParseMute("nonsense"), MuteUnknown)
 	}
 }
 
@@ -416,8 +424,8 @@ func TestGetStatus_UnsupportedSubunit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
 	}
-	if st.Power != "" || st.Input != "" || st.SoundPrg != "" || st.Volume != 0 || len(st.Raw) != 0 {
-		t.Errorf("expected empty Status from @UNDEFINED, got %+v", st)
+	if st.Power != PowerUnknown || st.MuteState != MuteUnknown || st.Input != "" || st.SoundPrg != "" || st.Volume != 0 || st.VolumeRaw != "" || len(st.Raw) != 0 {
+		t.Errorf("expected empty Status (unknown sentinels) from @UNDEFINED, got %+v", st)
 	}
 }
 

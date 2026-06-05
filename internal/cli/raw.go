@@ -14,9 +14,10 @@ import (
 // newRawCmd builds the `yamaha raw <method> [k=v ...]` subcommand.
 //
 // raw is the escape hatch for endpoints that this CLI does not yet wrap.
-// The Yamaha YXC catalog ships ~180 methods (see /tmp/yxc-mc.txt for the
-// reference list); only a subset are wrapped as first-class commands.
-// `raw` lets the user reach the rest without rebuilding the binary.
+// The Yamaha YXC catalog ships ~180 methods; only a subset are wrapped as
+// first-class commands. `raw` lets the user reach the rest without
+// rebuilding the binary. The method path is the source of truth either way —
+// the receiver's response_code validates whatever you send.
 //
 // The method argument is the YXC method path (e.g. "system/setPartyMode"
 // or "main/setVolume"). Subsequent args are positional `key=value` pairs
@@ -37,7 +38,8 @@ func newRawCmd() *cobra.Command {
 			"  yamaha raw netusb/setPlaybackMode mode=repeat type=track\n" +
 			"  yamaha raw dist/setServerInfo group_id=abc123 type=add zone=main \\\n" +
 			"      'client_list[0].ip_address=192.168.1.50'\n\n" +
-			"See /tmp/yxc-mc.txt for the full YXC method catalog.",
+			"The YXC method catalog is documented in Yamaha's YamahaExtendedControl\n" +
+			"specification; `yamaha info` summarises what the active device supports.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := stateFromCmd(cmd)

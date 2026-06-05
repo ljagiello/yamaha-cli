@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -29,12 +30,34 @@ type Client struct {
 	addr    string // host:port
 	timeout time.Duration
 
+	// multiTimeout bounds a SendMulti fan-out drain. 0 means "derive from
+	// timeout" (see effectiveMultiTimeout): a fan-out GET legitimately
+	// returns many lines and can take longer than a single round trip, so
+	// reusing the tight per-command timeout for the whole drain aborts a
+	// slow-but-healthy BASIC/METAINFO reply.
+	multiTimeout time.Duration
+
 	wakeOnConnect bool
+	commLog       CommLogger
 
 	mu      sync.Mutex
 	conn    net.Conn
 	scanner *bufio.Scanner
 }
+
+// CommLogger receives each YNCA line as it crosses the wire: sent=true for
+// a line written to the receiver, sent=false for a line read back. The CLI
+// wires this to its --debug logger so YNCA-only receivers get the same
+// request/response tracing the HTTP debug transport gives YXC. The hook is
+// called with c.mu held, so implementations must not call back into the
+// client; keep them to a cheap formatted write.
+type CommLogger func(sent bool, line string)
+
+// multiTimeoutFactor scales the per-command timeout into the default
+// fan-out drain budget. A BASIC GET on a busy receiver can dribble a dozen
+// report lines out over noticeably longer than one PUT round trip, so the
+// drain gets several times the single-command budget before it gives up.
+const multiTimeoutFactor = 4
 
 // wakeTimeout bounds how long the connect-time wake exchange waits for the
 // reply to BEGIN (see WithWakeOnConnect). Short on purpose: a healthy
@@ -58,6 +81,25 @@ func WithTimeout(d time.Duration) Option {
 			c.timeout = d
 		}
 	}
+}
+
+// WithMultiTimeout overrides the SendMulti fan-out drain budget. By
+// default it is derived from the per-command timeout (timeout ×
+// multiTimeoutFactor); pass an explicit duration to size it directly.
+func WithMultiTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.multiTimeout = d
+		}
+	}
+}
+
+// WithCommLog installs a CommLogger that observes every YNCA line sent and
+// received, for --debug wire tracing on YNCA-only receivers. Passing nil is
+// a no-op (the zero value), so the hot path stays allocation-free when
+// debugging is off.
+func WithCommLog(fn CommLogger) Option {
+	return func(c *Client) { c.commLog = fn }
 }
 
 // WithWakeOnConnect makes the client send a cheap `@SYS:MODELNAME=?` and
@@ -104,6 +146,24 @@ func New(host string, opts ...Option) (*Client, error) {
 		opt(c)
 	}
 	return c, nil
+}
+
+// logLine forwards one wire line to the comm logger, if one is installed.
+// Cheap no-op when debugging is off.
+func (c *Client) logLine(sent bool, line string) {
+	if c.commLog != nil {
+		c.commLog(sent, line)
+	}
+}
+
+// effectiveMultiTimeout is the budget a SendMulti drain runs under: the
+// explicit multiTimeout when set, otherwise the per-command timeout scaled
+// by multiTimeoutFactor.
+func (c *Client) effectiveMultiTimeout() time.Duration {
+	if c.multiTimeout > 0 {
+		return c.multiTimeout
+	}
+	return c.timeout * multiTimeoutFactor
 }
 
 // Close closes the underlying connection. Subsequent calls to Send or
@@ -226,7 +286,7 @@ func (c *Client) Send(ctx context.Context, line string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return classifyReply(reply)
+	return classifyReply(line, reply)
 }
 
 // sendOnceLocked performs a single write+read cycle. Caller must hold c.mu.
@@ -287,6 +347,7 @@ func (c *Client) sendOnceLocked(ctx context.Context, line string) (reply string,
 		}
 		return "", werr
 	}
+	c.logLine(true, line)
 
 	if !c.scanner.Scan() {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -301,7 +362,9 @@ func (c *Client) sendOnceLocked(ctx context.Context, line string) (reply string,
 		// EOF with no error: the peer closed the connection.
 		return "", io.EOF
 	}
-	return c.scanner.Text(), nil
+	reply = c.scanner.Text()
+	c.logLine(false, reply)
+	return reply, nil
 }
 
 // versionSentinel is the end-of-stream fence appended by SendMulti. Every
@@ -367,7 +430,10 @@ func (c *Client) sendMultiOnceLocked(ctx context.Context, line string) (lines []
 		}
 	}()
 
-	deadline := time.Now().Add(c.timeout)
+	// A fan-out drain runs under the (larger) multi-timeout budget, not the
+	// tight per-command timeout, so a slow-but-healthy reply with many
+	// report lines isn't cut off mid-stream (see effectiveMultiTimeout).
+	deadline := time.Now().Add(c.effectiveMultiTimeout())
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
@@ -400,9 +466,12 @@ func (c *Client) sendMultiOnceLocked(ctx context.Context, line string) (lines []
 		}
 		return nil, werr
 	}
+	c.logLine(true, line)
+	c.logLine(true, versionSentinel)
 
 	for c.scanner.Scan() {
 		reply := c.scanner.Text()
+		c.logLine(false, reply)
 		if strings.HasPrefix(reply, versionEchoPrefix) {
 			// Fence reached: every prior report line has been drained.
 			return lines, nil
@@ -447,13 +516,15 @@ func (c *Client) Probe(ctx context.Context) (string, error) {
 }
 
 // classifyReply turns a raw reply line into either a parsed value-bearing
-// line (returned as-is) or a typed error for known control replies.
-func classifyReply(reply string) (string, error) {
+// line (returned as-is) or a typed error for known control replies. request
+// is the line we sent, recorded on the typed error so it self-describes
+// which command the receiver rejected.
+func classifyReply(request, reply string) (string, error) {
 	switch {
 	case strings.HasPrefix(reply, "@UNDEFINED"):
-		return "", &ErrUndefinedCommand{Line: reply}
+		return "", &ErrUndefinedCommand{Request: request, Line: reply}
 	case strings.HasPrefix(reply, "@RESTRICTED"):
-		return "", &ErrRestricted{Line: reply}
+		return "", &ErrRestricted{Request: request, Line: reply}
 	}
 	return reply, nil
 }
@@ -507,7 +578,9 @@ func isTimeout(err error) bool {
 }
 
 // isConnReset reports whether err looks like a stale-connection error
-// for which a reconnect-and-retry is appropriate.
+// for which a reconnect-and-retry is appropriate. Scoped strictly to the
+// one-shot retry path in Send/SendMulti (the broader IsTransport classifier
+// handles DHCP rediscovery).
 func isConnReset(err error) bool {
 	if err == nil {
 		return false
@@ -518,13 +591,22 @@ func isConnReset(err error) bool {
 	if errors.Is(err, os.ErrClosed) {
 		return true
 	}
-	// net.OpError with a closed/reset underlying error.
+	// Match the concrete reset/abort errnos via errors.Is rather than
+	// string-matching net.OpError text, which is locale- and Go-version
+	// brittle. errors.Is unwraps through net.OpError → os.SyscallError →
+	// syscall.Errno, so this catches a half-open socket that surfaces as a
+	// bare ECONNRESET/EPIPE without "broken pipe"/"connection reset" text.
+	if errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNABORTED) {
+		return true
+	}
+	// Fallback to the original text match for any platform/wrapper that
+	// doesn't surface a typed errno.
 	var ne *net.OpError
-	if errors.As(err, &ne) {
-		if ne.Err != nil && strings.Contains(ne.Err.Error(), "broken pipe") {
-			return true
-		}
-		if ne.Err != nil && strings.Contains(ne.Err.Error(), "connection reset") {
+	if errors.As(err, &ne) && ne.Err != nil {
+		msg := ne.Err.Error()
+		if strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset") {
 			return true
 		}
 	}
