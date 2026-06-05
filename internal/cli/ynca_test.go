@@ -361,8 +361,18 @@ func TestYnca_SendNotRetriedOnTransport(t *testing.T) {
 				scanner.Split(yncaSplitCRLF)
 				for scanner.Scan() {
 					line := scanner.Text()
+					// Answer the read-only handshake lines (probe + the
+					// connect-time wake ping) like a real receiver, keeping
+					// the connection open. A real device replies to
+					// @SYS:MODELNAME=?; closing on it would only happen on a
+					// genuinely broken socket, which is not what this test
+					// exercises.
 					if line == "@SYS:VERSION=?" {
 						_, _ = io.WriteString(c, "@SYS:VERSION=2.87/1.81\r\n")
+						continue
+					}
+					if line == "@SYS:MODELNAME=?" {
+						_, _ = io.WriteString(c, "@SYS:MODELNAME=RX-V583\r\n")
 						continue
 					}
 					// Any other command: count + abruptly close to surface
