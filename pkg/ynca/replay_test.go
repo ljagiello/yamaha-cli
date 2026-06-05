@@ -235,6 +235,102 @@ func TestReplay_NowPlaying(t *testing.T) {
 	}
 }
 
+// amTranscript exercises the AM branch (distinct Atoi parse path and the
+// BandAM arm of GetTunerStatus) that the FM-only rxv583Transcript never hits.
+const amTranscript = `@SYS:VERSION=1.00/1.00
+@TUN:BAND=AM
+@TUN:AMFREQ=1530
+@TUN:PRESET=2
+`
+
+// fmRdsTranscript carries the RDS group fields an FM station broadcasts, so
+// the RDSINFO fan-out drain in GetRDSInfo actually runs.
+const fmRdsTranscript = `@SYS:VERSION=1.00/1.00
+@TUN:BAND=FM
+@TUN:FMFREQ=98.50
+@TUN:RDSPRGSERVICE=BBC R4
+@TUN:RDSPRGTYPE=News
+@TUN:RDSTXTA=Now playing: a song
+@TUN:RDSTXTB=Up next
+`
+
+func TestReplay_AMTuner(t *testing.T) {
+	c, err := New(newReplayYNCA(t, amTranscript))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := testCtx(t)
+
+	khz, err := c.GetAMFreq(ctx)
+	if err != nil || khz != 1530 {
+		t.Fatalf("GetAMFreq = (%d, %v), want 1530", khz, err)
+	}
+	st, err := c.GetTunerStatus(ctx)
+	if err != nil {
+		t.Fatalf("GetTunerStatus: %v", err)
+	}
+	if st.Band != BandAM || st.FreqKHz != 1530 || st.Preset != "2" {
+		t.Errorf("AM tuner status = band %q freq %d preset %q, want AM/1530/2", st.Band, st.FreqKHz, st.Preset)
+	}
+	if st.FreqMHz != 0 {
+		t.Errorf("FreqMHz = %v, want 0 on AM", st.FreqMHz)
+	}
+}
+
+func TestReplay_RDS(t *testing.T) {
+	c, err := New(newReplayYNCA(t, fmRdsTranscript))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	rds, err := c.GetRDSInfo(testCtx(t))
+	if err != nil {
+		t.Fatalf("GetRDSInfo: %v", err)
+	}
+	if rds.ProgramService != "BBC R4" || rds.ProgramType != "News" {
+		t.Errorf("RDS service/type = %q/%q, want BBC R4/News", rds.ProgramService, rds.ProgramType)
+	}
+	if rds.RadioTextA != "Now playing: a song" || rds.RadioTextB != "Up next" {
+		t.Errorf("RDS text = %q / %q", rds.RadioTextA, rds.RadioTextB)
+	}
+}
+
+func TestReplay_TransportVerbs(t *testing.T) {
+	// Build the store directly so we can inspect the PLAYBACK value each
+	// transport verb writes (the verbs are put-only — no getter to read back).
+	store := parseReplayTranscript(rxv583Transcript)
+	c, err := New(newFakeYNCA(t, store.answer))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := testCtx(t)
+
+	cases := []struct {
+		op   func(context.Context, string) error
+		want string
+	}{
+		{c.Play, "Play"},
+		{c.Pause, "Pause"},
+		{c.Stop, "Stop"},
+		{c.Next, "Skip Fwd"},
+		{c.Prev, "Skip Rev"},
+	}
+	for _, tc := range cases {
+		if err := tc.op(ctx, SubunitSpotify); err != nil {
+			t.Fatalf("transport %q: %v", tc.want, err)
+		}
+		store.mu.Lock()
+		got := store.m[SubunitSpotify][FuncPlayback]
+		store.mu.Unlock()
+		if got != tc.want {
+			t.Errorf("transport wrote PLAYBACK=%q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestReplay_SetRoundTrips(t *testing.T) {
 	c := newReplayClient(t)
 	ctx := testCtx(t)

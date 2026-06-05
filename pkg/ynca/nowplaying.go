@@ -38,6 +38,25 @@ type NowPlaying struct {
 	Raw map[string]string
 }
 
+// sourceSubunits is the set of source subunit ids — the codomain of
+// SubunitForInput — i.e. every subunit that answers METAINFO/PLAYBACK.
+var sourceSubunits = map[string]bool{
+	SubunitAirPlay: true, SubunitBluetMix: true, SubunitDeezer: true,
+	SubunitIpod: true, SubunitIpodUSB: true, SubunitMCLink: true,
+	SubunitNapster: true, SubunitNetRadio: true, SubunitPandora: true,
+	SubunitPC: true, SubunitRhapsody: true, SubunitServer: true,
+	SubunitSirius: true, SubunitSpotify: true, SubunitTidal: true,
+	SubunitUAW: true, SubunitUSB: true,
+}
+
+// IsSourceSubunit reports whether id (case-insensitive) names a
+// streaming/network/USB source subunit. Lets a caller accept a subunit id
+// directly (e.g. "SPOTIFY") while still rejecting a non-source token
+// ("TUNER", "HDMI1", "MAIN") that merely happens to be upper-case.
+func IsSourceSubunit(id string) bool {
+	return sourceSubunits[strings.ToUpper(strings.TrimSpace(id))]
+}
+
 // SubunitForInput maps a selected input to the source subunit that answers
 // its now-playing and transport functions, or "" when the input is not a
 // streaming/network/USB source (a physical connector like HDMI has no

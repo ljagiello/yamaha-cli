@@ -28,6 +28,13 @@ import (
 var (
 	yncaWatchBackoffMin = 1 * time.Second
 	yncaWatchBackoffMax = 30 * time.Second
+	// yncaWatchRediscoverAfter is how many consecutive dial failures trigger
+	// a rediscover-safe host re-settle (to follow a DHCP-shifted receiver).
+	yncaWatchRediscoverAfter = 3
+	// yncaWatchSettle resolves/rediscovers the host. A var so a test can stub
+	// it to observe the re-settle path without real SSDP infrastructure;
+	// production always uses yncaSettleHost.
+	yncaWatchSettle = yncaSettleHost
 )
 
 // newYncaWatchCmd builds `ynca watch`.
@@ -59,7 +66,7 @@ func runYncaWatch(cmd *cobra.Command, _ []string) error {
 	// Settle the host first (rediscover-safe probe), so a DHCP-shifted
 	// receiver's current IP is found and persisted before we open the
 	// long-lived session against it.
-	if err := yncaSettleHost(ctx, s); err != nil {
+	if err := yncaWatchSettle(ctx, s); err != nil {
 		return err
 	}
 
@@ -90,6 +97,7 @@ func runYncaWatch(cmd *cobra.Command, _ []string) error {
 	// Supervise: run one connection at a time, reconnecting with capped
 	// backoff until the context is cancelled.
 	backoff := yncaWatchBackoffMin
+	dialFailures := 0
 	for {
 		sess, serr := ynca.NewSession(s.device.Host, opts...)
 		if serr != nil {
@@ -100,7 +108,29 @@ func runYncaWatch(cmd *cobra.Command, _ []string) error {
 			// Clean cancellation (SIGINT): exit 0.
 			return nil
 		}
-		// The connection dropped on its own. Emit a control line and back off.
+
+		// A run that ended in a *dial* failure may mean the receiver moved to
+		// a new DHCP address. After a few consecutive dial failures, attempt a
+		// rediscover-safe re-settle (the same SSDP-by-UDN recovery the
+		// one-shot commands use) so the long-lived watch isn't stuck dialling
+		// a stale IP forever. A successful re-settle resets the backoff; we
+		// re-accumulate the counter so settle attempts stay spaced out.
+		var de *ynca.DialError
+		if errors.As(runErr, &de) {
+			dialFailures++
+			if dialFailures >= yncaWatchRediscoverAfter {
+				dialFailures = 0
+				if err := yncaWatchSettle(ctx, s); err == nil {
+					backoff = yncaWatchBackoffMin
+				} else if ctx.Err() != nil {
+					return nil
+				}
+			}
+		} else {
+			dialFailures = 0
+		}
+
+		// The connection dropped. Emit a control line and back off.
 		writeYncaWatchControl(out, useTable, alias, "reconnect", runErr)
 		select {
 		case <-ctx.Done():

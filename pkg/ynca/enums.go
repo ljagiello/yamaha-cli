@@ -208,11 +208,16 @@ func (m Mute) Known() bool {
 	return m == MuteOff || m == MuteOn || m == MuteAtt20 || m == MuteAtt40
 }
 
-// Muted reports whether m represents any non-Off state (On or either
-// attenuation level). An unknown value is treated as not-muted, matching
-// the original boolean parseMute's "only Off is unmuted, but be
-// conservative about garbage" intent — callers that care about the precise
-// state branch on the typed value instead.
+// Muted reports whether m represents an active mute — On or either
+// attenuation level. An unknown/unparseable value reports false: a string
+// the device never legitimately sends should not be surfaced as "muted".
+//
+// This is a deliberate change from the original bool parseMute, which
+// returned !EqualFold(v,"off") and so reported ANY non-"Off" value (garbage
+// included) as muted. Real firmware only ever emits the four known states,
+// so the difference is academic in practice — but reporting an off-spec
+// value as "not muted" is the safer default than as "muted". Callers that
+// need the precise state branch on the typed Mute value instead.
 func (m Mute) Muted() bool {
 	return m == MuteOn || m == MuteAtt20 || m == MuteAtt40
 }

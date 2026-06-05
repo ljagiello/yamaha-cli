@@ -187,6 +187,28 @@ func TestYncaSubcmd_TransportResolvesSource(t *testing.T) {
 	}
 }
 
+// TestYncaSubcmd_TransportRejectsNonSource pins the --source fix: a
+// non-streaming token like TUNER must fail with a usage error (exit 2)
+// rather than being sent blindly as @TUNER:PLAYBACK=... The source resolves
+// before any dial, so no server is needed.
+func TestYncaSubcmd_TransportRejectsNonSource(t *testing.T) {
+	shrinkYNCATimeouts(t, 200*time.Millisecond, 200*time.Millisecond)
+
+	cmd := newYncaCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"play", "--source", "TUNER"})
+	cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, "127.0.0.1:1")))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("play --source TUNER: want a usage error, got nil")
+	}
+	if code := ErrorExitCode(err); code != 2 {
+		t.Errorf("play --source TUNER exit code = %d, want 2 (usage): %v", code, err)
+	}
+}
+
 func TestYncaSubcmd_InputListsOnNoArg(t *testing.T) {
 	shrinkYNCATimeouts(t, 500*time.Millisecond, 500*time.Millisecond)
 	addr, _ := yncaSubcmdServer(t, nil)

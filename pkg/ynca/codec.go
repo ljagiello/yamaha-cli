@@ -21,6 +21,15 @@ const volumeStep = 0.5
 // "0.0". A non-positive step disables rounding (the value is printed as-is
 // at the requested precision). This is the single rounding+formatting rule
 // every stepped YNCA function shares.
+//
+// Note: Go's math.Round is half-away-from-zero, whereas the ynca reference
+// library's number_to_string_with_stepsize uses Python's round() (banker's
+// rounding, half-to-even). The two differ ONLY for a value that lands exactly
+// on a half-step midpoint (e.g. AM 1005 kHz on the 10 kHz grid → 1010 here vs
+// 1000 there; FM 90.5 on the 0.2 MHz grid → 90.60). This is an intentional,
+// benign divergence: these are user-typed targets and the receiver clamps to
+// its own valid grid regardless, so a one-step difference at an exact tie has
+// no practical effect. Kept as-is rather than reimplementing banker's rounding.
 func formatStepped(value float64, decimals int, step float64) string {
 	rounded := value
 	if step > 0 {

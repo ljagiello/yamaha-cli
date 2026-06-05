@@ -88,6 +88,22 @@ func TestParsePlaybackInfo(t *testing.T) {
 	}
 }
 
+func TestIsSourceSubunit(t *testing.T) {
+	// Real source subunit ids (case-insensitive) are accepted...
+	for _, id := range []string{"SPOTIFY", "spotify", "NETRADIO", "USB", "BT"} {
+		if !IsSourceSubunit(id) {
+			t.Errorf("IsSourceSubunit(%q) = false, want true", id)
+		}
+	}
+	// ...but non-source upper-case tokens are rejected (the bug fix: TUNER
+	// must not be mistaken for a source subunit and sent as @TUNER:...).
+	for _, id := range []string{"TUNER", "TUN", "HDMI1", "MAIN", "SYS", ""} {
+		if IsSourceSubunit(id) {
+			t.Errorf("IsSourceSubunit(%q) = true, want false", id)
+		}
+	}
+}
+
 func TestSubunitForInput(t *testing.T) {
 	cases := map[string]string{
 		"NET RADIO": SubunitNetRadio,

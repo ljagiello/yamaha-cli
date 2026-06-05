@@ -135,11 +135,14 @@ func resolveYncaSource(ctx context.Context, c *ynca.Client, s *state, sourceFlag
 		if su := ynca.SubunitForInput(sf); su != "" {
 			return su, nil
 		}
-		// Allow passing a subunit id directly (e.g. --source SPOTIFY).
-		if up := strings.ToUpper(sf); up == sf {
-			return up, nil
+		// Allow passing a source subunit id directly (e.g. --source SPOTIFY),
+		// but only a real one — a non-source upper-case token like TUNER or
+		// HDMI1 must fall through to the usage error, not be sent blindly as
+		// @TUNER:METAINFO=? (which would surface a device-side @UNDEFINED).
+		if ynca.IsSourceSubunit(sf) {
+			return strings.ToUpper(sf), nil
 		}
-		return "", newUsageError("input %q has no streaming source (try a network/USB input like 'NET RADIO', 'Spotify', 'USB')", sourceFlag)
+		return "", newUsageError("source %q is not a streaming input/subunit (try a network/USB source like 'NET RADIO', 'Spotify', 'USB')", sourceFlag)
 	}
 	input, err := c.GetInput(ctx, yncaSubunitForZone(s.zone))
 	if err != nil {
