@@ -179,8 +179,17 @@ func (c *Client) wakeLocked(ctx context.Context) {
 			break
 		}
 		// The reply has started; shorten the window so we stop at the
-		// first idle gap rather than blocking for the full wake budget.
-		_ = c.conn.SetReadDeadline(time.Now().Add(wakeDrainIdle))
+		// first idle gap rather than blocking for the full wake budget —
+		// but never PAST the original wake deadline. Clamping to that
+		// ceiling guarantees the drain is bounded by wakeTimeout even if a
+		// (pathological) peer streams report lines faster than wakeDrainIdle
+		// without ever pausing; otherwise the per-read deadline would keep
+		// advancing and the loop, holding c.mu, would never terminate.
+		next := time.Now().Add(wakeDrainIdle)
+		if next.After(deadline) {
+			next = deadline
+		}
+		_ = c.conn.SetReadDeadline(next)
 	}
 	// Clear the temporary deadlines so the caller's own deadline logic
 	// starts from a clean slate.

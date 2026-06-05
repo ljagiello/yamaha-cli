@@ -183,6 +183,72 @@ func TestWakeOnConnect_DrainsInterleavedPush(t *testing.T) {
 	}
 }
 
+// TestWakeOnConnect_BoundedUnderContinuousStream is the regression test for
+// the re-review finding: a peer that streams report lines faster than
+// wakeDrainIdle (with no pause) must not keep the wake drain looping
+// forever while it holds c.mu. The drain must be bounded by wakeTimeout.
+// Against the unclamped version, Send never returns and this times out.
+func TestWakeOnConnect_BoundedUnderContinuousStream(t *testing.T) {
+	prev := wakeTimeout
+	wakeTimeout = 200 * time.Millisecond
+	defer func() { wakeTimeout = prev }()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var wg sync.WaitGroup
+	go func() {
+		for {
+			conn, aerr := l.Accept()
+			if aerr != nil {
+				return
+			}
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				defer c.Close()
+				sc := bufio.NewScanner(c)
+				sc.Split(splitCRLF)
+				for sc.Scan() {
+					if sc.Text() == "@SYS:MODELNAME=?" {
+						// Stream unsolicited lines every 10ms (< wakeDrainIdle)
+						// until the client closes — never an idle gap.
+						for {
+							if _, werr := io.WriteString(c, "@MAIN:VOL=-40.0\r\n"); werr != nil {
+								return
+							}
+							time.Sleep(10 * time.Millisecond)
+						}
+					}
+				}
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = l.Close(); wg.Wait() })
+
+	c, err := New(l.Addr().String(), WithWakeOnConnect(), WithTimeout(200*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	done := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = c.Send(ctx, "@MAIN:PWR=?") // reply value irrelevant; must RETURN
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Returned within the bound — drain was capped by wakeTimeout.
+	case <-time.After(3 * time.Second):
+		t.Fatal("Send did not return: wake drain looped unbounded under a continuous push stream")
+	}
+}
+
 func TestParsePowerAndMute(t *testing.T) {
 	if p, err := ParsePower("on"); err != nil || p != PowerOn {
 		t.Errorf("ParsePower(on) = (%q, %v)", p, err)
