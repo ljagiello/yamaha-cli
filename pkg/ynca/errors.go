@@ -34,21 +34,37 @@ func (e *ProtocolError) Error() string {
 
 // ErrUndefinedCommand is the receiver's `@UNDEFINED` reply: the
 // subunit/function pair does not exist on this device.
+//
+// Request carries the line we sent (e.g. "@MAIN:ZONENAME=?"). The receiver
+// only ever replies the bare "@UNDEFINED" with no echo of what it rejected,
+// but because Send is one-line-in/one-line-out under a mutex the client
+// knows the in-flight line and records it here, so the error self-describes
+// ("@MAIN:ZONENAME=? -> @UNDEFINED") without the CLI having to thread the
+// request line through separately.
 type ErrUndefinedCommand struct {
-	Line string
+	Request string // the line we sent, when known
+	Line    string // the receiver's reply ("@UNDEFINED")
 }
 
 func (e *ErrUndefinedCommand) Error() string {
+	if e.Request != "" {
+		return fmt.Sprintf("ynca: undefined command (%s -> %s)", e.Request, e.Line)
+	}
 	return fmt.Sprintf("ynca: undefined command (reply=%q)", e.Line)
 }
 
 // ErrRestricted is the receiver's `@RESTRICTED` reply: the function
 // exists but is not currently allowed (e.g. the zone is in standby).
+// Request carries the line we sent, when known (see ErrUndefinedCommand).
 type ErrRestricted struct {
-	Line string
+	Request string // the line we sent, when known
+	Line    string // the receiver's reply ("@RESTRICTED")
 }
 
 func (e *ErrRestricted) Error() string {
+	if e.Request != "" {
+		return fmt.Sprintf("ynca: restricted (%s -> %s)", e.Request, e.Line)
+	}
 	return fmt.Sprintf("ynca: restricted (reply=%q)", e.Line)
 }
 

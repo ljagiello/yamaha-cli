@@ -3,7 +3,6 @@ package ynca
 import (
 	"context"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 )
@@ -18,15 +17,25 @@ import (
 // descriptor model: a value codec per function (Power/Mute/Volume/string)
 // plus typed getters/setters built on Send and the multi-line SendMulti.
 
-// Power is a subunit's PWR value.
+// Power is a subunit's PWR value. The typed enum surface (Mute, Input,
+// SoundProgram, …) lives in enums.go; Power stays here next to its
+// getter/setter for historical reasons. PowerUnknown is the sentinel a
+// non-erroring parse maps an unrecognised value to, so Status can tell
+// "not reported" apart from a real reading.
 type Power string
 
 const (
 	PowerOn      Power = "On"
 	PowerStandby Power = "Standby"
+	PowerUnknown Power = UnknownValue
 )
 
-// ParsePower normalises a wire PWR value (case-insensitive).
+// Known reports whether p is one of the modelled power states.
+func (p Power) Known() bool { return p == PowerOn || p == PowerStandby }
+
+// ParsePower normalises a wire PWR value (case-insensitive). Returns an
+// error on an unrecognised value — used by GetPower, where garbage should
+// surface rather than be silently swallowed.
 func ParsePower(v string) (Power, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "on":
@@ -37,26 +46,15 @@ func ParsePower(v string) (Power, error) {
 	return "", fmt.Errorf("ynca: unrecognised power %q", v)
 }
 
-// volumeStep is the YNCA volume granularity in dB. The reference library
-// rounds set values to this step; receivers report on the same grid.
-const volumeStep = 0.5
-
-// formatVolume renders a dB value onto the YNCA volume grid: rounded to
-// the nearest 0.5 dB and printed with one decimal, normalising -0.0 to
-// "0.0" (a port of ynca's number_to_string_with_stepsize).
-func formatVolume(db float64) string {
-	rounded := math.Round(db/volumeStep) * volumeStep
-	if rounded == 0 {
-		rounded = 0 // collapse a possible -0.0
+// ParsePowerState normalises a wire PWR value to a Power, mapping anything
+// unrecognised to PowerUnknown (no error). Used when assembling Status,
+// where an unexpected value should be preserved-as-unknown rather than
+// abort the whole status read.
+func ParsePowerState(v string) Power {
+	if p, err := ParsePower(v); err == nil {
+		return p
 	}
-	return strconv.FormatFloat(rounded, 'f', 1, 64)
-}
-
-// parseMute maps a wire MUTE value to a boolean. YNCA reports "On"/"Off"
-// and, on some models, attenuation levels ("Att -20 dB"); anything other
-// than "Off" counts as muted.
-func parseMute(v string) bool {
-	return !strings.EqualFold(strings.TrimSpace(v), "off")
+	return PowerUnknown
 }
 
 // get issues "@<subunit>:<function>=?" and returns the parsed value.
@@ -80,6 +78,12 @@ func (c *Client) put(ctx context.Context, subunit, function, value string) error
 	return err
 }
 
+// GetModelName reads the receiver's model name (@SYS:MODELNAME), e.g.
+// "RX-V583".
+func (c *Client) GetModelName(ctx context.Context) (string, error) {
+	return c.get(ctx, SubunitSystem, FuncModelName)
+}
+
 // GetPower reads the subunit's power state.
 func (c *Client) GetPower(ctx context.Context, subunit string) (Power, error) {
 	v, err := c.get(ctx, subunit, "PWR")
@@ -94,16 +98,30 @@ func (c *Client) SetPower(ctx context.Context, subunit string, p Power) error {
 	return c.put(ctx, subunit, "PWR", string(p))
 }
 
-// GetMute reports whether the subunit is muted.
-func (c *Client) GetMute(ctx context.Context, subunit string) (bool, error) {
+// GetMuteState reads the subunit's precise MUTE state, preserving the
+// attenuation levels (Att -20/-40 dB) that some RX-V receivers report.
+func (c *Client) GetMuteState(ctx context.Context, subunit string) (Mute, error) {
 	v, err := c.get(ctx, subunit, "MUTE")
+	if err != nil {
+		return MuteUnknown, err
+	}
+	return ParseMute(v), nil
+}
+
+// GetMute reports whether the subunit is muted (any non-Off state). Thin
+// boolean convenience over GetMuteState, preserved for the toggle path and
+// script consumers that only need yes/no.
+func (c *Client) GetMute(ctx context.Context, subunit string) (bool, error) {
+	m, err := c.GetMuteState(ctx, subunit)
 	if err != nil {
 		return false, err
 	}
-	return parseMute(v), nil
+	return m.Muted(), nil
 }
 
-// SetMute mutes or unmutes the subunit.
+// SetMute mutes or unmutes the subunit. The device only accepts On/Off on
+// write (the attenuation levels are read-back states, not settable), so the
+// input stays a plain bool.
 func (c *Client) SetMute(ctx context.Context, subunit string, on bool) error {
 	v := "Off"
 	if on {
@@ -130,15 +148,31 @@ func (c *Client) SetVolume(ctx context.Context, subunit string, db float64) erro
 	return c.put(ctx, subunit, "VOL", formatVolume(db))
 }
 
-// VolumeUp nudges the volume up one device step (@<subunit>:VOL=Up).
-// Relative and therefore not idempotent — callers must not auto-retry it.
-func (c *Client) VolumeUp(ctx context.Context, subunit string) error {
-	return c.put(ctx, subunit, "VOL", "Up")
+// VolumeUp nudges the volume up by step dB. YNCA accepts the explicit
+// steps 1, 2 and 5 dB as "Up <n> dB"; any other value (including the 0.5 dB
+// default) sends a bare "Up", which moves one device step. Relative and
+// therefore not idempotent — callers must not auto-retry it. Mirrors ynca's
+// do_vol_up.
+func (c *Client) VolumeUp(ctx context.Context, subunit string, step float64) error {
+	return c.put(ctx, subunit, "VOL", volNudge("Up", step))
 }
 
-// VolumeDown nudges the volume down one device step.
-func (c *Client) VolumeDown(ctx context.Context, subunit string) error {
-	return c.put(ctx, subunit, "VOL", "Down")
+// VolumeDown nudges the volume down by step dB (see VolumeUp for the step
+// semantics).
+func (c *Client) VolumeDown(ctx context.Context, subunit string, step float64) error {
+	return c.put(ctx, subunit, "VOL", volNudge("Down", step))
+}
+
+// volNudge builds the relative VOL value for a nudge: "Up"/"Down" for the
+// default step, or "Up <n> dB"/"Down <n> dB" for the device-supported whole
+// steps 1, 2 and 5 dB.
+func volNudge(dir string, step float64) string {
+	switch step {
+	case 1, 2, 5:
+		return fmt.Sprintf("%s %d dB", dir, int(step))
+	default:
+		return dir
+	}
 }
 
 // GetInput reads the subunit's selected input (e.g. "HDMI2").
@@ -169,12 +203,20 @@ func (c *Client) SetSoundProgram(ctx context.Context, subunit, program string) e
 
 // Status is the decoded state of one subunit, assembled from a single
 // "@<subunit>:BASIC=?" fan-out GET.
+//
+// Fields are initialised to their "unknown" sentinel (Power/MuteState) or
+// left empty (Input/SoundPrg) so a caller can tell "the device didn't
+// report this" apart from a real reading — mirroring ynca's read-through
+// cache, which returns None for un-reported functions rather than a
+// zero-value. VolumeRaw == "" is the presence flag for Volume (Go's float64
+// zero is a legitimate dB reading).
 type Status struct {
 	Subunit   string
 	Power     Power
 	Volume    float64
-	VolumeRaw string // raw wire value (kept when Volume couldn't be parsed)
-	Mute      bool
+	VolumeRaw string // raw wire value; "" means VOL was not reported
+	Mute      bool   // convenience: MuteState.Muted()
+	MuteState Mute   // precise state, incl. attenuation levels
 	Input     string
 	SoundPrg  string
 	// Raw holds every FUNCTION=value line the BASIC GET returned for this
@@ -192,7 +234,12 @@ func (c *Client) GetStatus(ctx context.Context, subunit string) (*Status, error)
 	if err != nil {
 		return nil, err
 	}
-	st := &Status{Subunit: subunit, Raw: make(map[string]string, len(lines))}
+	st := &Status{
+		Subunit:   subunit,
+		Power:     PowerUnknown,
+		MuteState: MuteUnknown,
+		Raw:       make(map[string]string, len(lines)),
+	}
 	for _, ln := range lines {
 		su, fn, val, perr := parseLine(ln)
 		if perr != nil || !strings.EqualFold(su, subunit) {
@@ -201,14 +248,15 @@ func (c *Client) GetStatus(ctx context.Context, subunit string) (*Status, error)
 		st.Raw[fn] = val
 		switch strings.ToUpper(fn) {
 		case "PWR":
-			st.Power, _ = ParsePower(val)
+			st.Power = ParsePowerState(val)
 		case "VOL":
 			st.VolumeRaw = val
 			if db, e := strconv.ParseFloat(strings.TrimSpace(val), 64); e == nil {
 				st.Volume = db
 			}
 		case "MUTE":
-			st.Mute = parseMute(val)
+			st.MuteState = ParseMute(val)
+			st.Mute = st.MuteState.Muted()
 		case "INP":
 			st.Input = val
 		case "SOUNDPRG":

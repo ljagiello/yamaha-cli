@@ -32,7 +32,13 @@ func (s *state) newYXCClient(host string) (*yxc.Client, error) {
 // WithWakeOnConnect is enabled so a receiver in YNCA standby is woken
 // before the first command (notably the Probe), instead of having that
 // first command silently dropped and the device misread as not speaking
-// YNCA.
+// YNCA. When --debug / YAMAHA_DEBUG is on, a comm logger traces every YNCA
+// line (->/<-) on stderr — the YNCA twin of the HTTP debug transport, which
+// only ever saw YXC traffic.
 func (s *state) newYNCAClient(host string, timeout time.Duration) (*ynca.Client, error) {
-	return ynca.New(host, ynca.WithTimeout(timeout), ynca.WithWakeOnConnect())
+	opts := []ynca.Option{ynca.WithTimeout(timeout), ynca.WithWakeOnConnect()}
+	if s != nil && s.debug != nil && s.debug.Enabled() {
+		opts = append(opts, ynca.WithCommLog(yncaCommLog(s)))
+	}
+	return ynca.New(host, opts...)
 }

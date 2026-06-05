@@ -192,6 +192,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newYncaCmd())
 
 	// Discovery, config, ergonomics.
+	cmd.AddCommand(newInfoCmd())
 	cmd.AddCommand(newDiscoverCmd())
 	cmd.AddCommand(newConfigCmd())
 	cmd.AddCommand(newCompletionCmd())
@@ -312,6 +313,13 @@ func needsDevice(cmd *cobra.Command) bool {
 	case "show", "path":
 		// `config show` / `config path` — leaf names; check parent.
 		if cmd.Parent() != nil && cmd.Parent().Name() == "config" {
+			return false
+		}
+	case "diff", "list":
+		// `ynca diff` (offline transcript compare) and `ynca list` (static
+		// function catalog) never touch the receiver — leaf names; check
+		// parent so a future top-level diff/list isn't accidentally exempted.
+		if cmd.Parent() != nil && cmd.Parent().Name() == "ynca" {
 			return false
 		}
 	case "config":

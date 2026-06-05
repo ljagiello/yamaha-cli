@@ -108,7 +108,15 @@ yamaha raw <method> [k=v ...]                # generic YXC GET passthrough
 # Legacy YNCA (TCP/50000) — raw passthrough + typed subcommands for YNCA-only receivers:
 yamaha ynca <line>                           # raw passthrough (e.g. @MAIN:VOL=?)
 yamaha ynca status|power|volume|mute|input|sound
-yamaha ynca repl                             # interactive prompt
+yamaha ynca decoder|tone|sleep|scene|system power      # zone controls
+yamaha ynca pure-direct|enhancer|extra-bass|adaptive-drc|straight|surround-ai|3d-cinema on|off
+yamaha ynca tuner status|band|fm|am|preset             # AM/FM tuner
+yamaha ynca now-playing|play|pause|stop|next|prev      # streaming source
+yamaha ynca watch|info|list|dump|diff                  # observation & tooling
+yamaha ynca repl                             # interactive prompt (help, ?SUB)
+
+# Device info (YXC):
+yamaha info [--all-zones]                    # model/firmware + zone capabilities
 
 # Discovery & config:
 yamaha discover [--add]                      # SSDP scan; --add saves to config
@@ -293,6 +301,12 @@ Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--o
 | `raw` | no (caller supplies the method path) |
 | `ynca <line>` / `ynca repl` | no |
 | `ynca status` / `power` / `volume` / `mute` / `input` / `sound` | yes (zone → YNCA subunit) |
+| `ynca decoder` / `tone` / `sleep` / `scene` / DSP toggles | yes (zone → YNCA subunit) |
+| `ynca system power` | no (system-wide `@SYS:PWR`) |
+| `ynca tuner *` / `now-playing` / `play` / `pause` / `stop` / `next` / `prev` | no (act on `@TUN` / the source subunit) |
+| `ynca watch` / `dump` | no (whole-device) · `ynca info` reads `--zone` to validate it |
+| `ynca list` / `ynca diff` | no (offline; need no device) |
+| `info` | reads the active `--zone`'s capabilities |
 | `discover` | no |
 | `config show` / `config path` | no |
 | `completion` | no |
@@ -337,17 +351,38 @@ This covers the ~184 endpoints in the YXC public spec — party mode, YPAO, Blue
 
 YNCA is the legacy line-based control protocol on TCP/50000 — the *only* protocol some pre-MusicCast receivers speak, and a useful escape hatch on newer ones when YXC doesn't expose a particular control. `yamaha ynca` is both a raw passthrough and a small typed command set.
 
-**Typed subcommands** act on the `--zone`-mapped subunit (`main`→`MAIN`, `zone2`→`ZONE2`, …), giving a YNCA-only receiver the same kind of first-class surface YXC devices get:
+**Typed subcommands** act on the `--zone`-mapped subunit (`main`→`MAIN`, `zone2`→`ZONE2`, …), giving a YNCA-only receiver the same first-class surface YXC devices get — now at near parity:
 
 ```bash
+# Core control
 yamaha ynca status                           # decoded power/volume/mute/input/sound (one @MAIN:BASIC=? GET)
 yamaha ynca power on|off|toggle
 yamaha ynca volume -- -30.5                  # absolute dB (rounded to the 0.5 dB grid); '--' since it's negative
-yamaha ynca volume up|down                   # nudge one step
-yamaha ynca mute on|off|toggle
-yamaha ynca input HDMI2
-yamaha ynca sound Standard
-yamaha ynca repl                             # interactive prompt over one persistent connection
+yamaha ynca volume up|down [--step 1|2|5]    # nudge one device step, or by 1/2/5 dB
+yamaha ynca mute on|off|toggle               # status keeps the precise state (e.g. Att -20 dB)
+yamaha ynca input [name]                     # no arg lists known inputs; case-insensitive (hdmi2 → HDMI2)
+yamaha ynca sound [program]                  # no arg lists known sound programs
+
+# Zone controls (parity with the YXC surface)
+yamaha ynca decoder [type]                   # surround decoder (@MAIN:2CHDECODER); no arg lists values
+yamaha ynca tone bass|treble <±N>            # speaker bass/treble; `tone reset` zeros both
+yamaha ynca sleep 0|30|60|90|120|off
+yamaha ynca scene [n]                        # recall scene N; no arg lists configured scene names
+yamaha ynca system power on|off|toggle       # system-wide @SYS:PWR (vs a zone)
+yamaha ynca pure-direct|enhancer|extra-bass|adaptive-drc|straight|surround-ai|3d-cinema on|off
+
+# Sources: tuner, now-playing, transport
+yamaha ynca tuner status|band|fm|am|preset   # AM/FM band, frequency, preset, RDS
+yamaha ynca now-playing [--source 'NET RADIO']   # metadata for the active streaming source
+yamaha ynca play|pause|stop|next|prev [--source …]
+
+# Observation & tooling
+yamaha ynca watch                            # stream live push reports as NDJSON (table on a TTY)
+yamaha ynca info                             # model, firmware, present zones/tuner; validates --zone
+yamaha ynca list [system|zone|tuner|source]  # known function catalog (offline)
+yamaha ynca dump [--commands FILE] [--out FILE]  # capture a replayable transcript
+yamaha ynca diff <reference> <other>         # functions present in <other> but not <reference> (offline)
+yamaha ynca repl                             # interactive prompt; `help`/`?` and `?SUB` for in-session discovery
 ```
 
 **Raw passthrough** — send any YNCA line and print the reply verbatim (leading `@` optional):
@@ -357,7 +392,9 @@ yamaha ynca @MAIN:VOL=?
 yamaha ynca @SYS:MODELNAME=?
 ```
 
-A capability probe runs once per invocation. Devices that don't speak YNCA fail fast with exit 70 (`device does not support YNCA`) instead of a vague timeout. `@UNDEFINED` replies (unsupported command) map to exit 70; `@RESTRICTED` replies (valid but not allowed in the current device state) map to exit 75 with a retry hint. On connect the client sends a cheap `@SYS:MODELNAME=?` wake ping so a receiver in YNCA standby — which silently drops the first command while waking — doesn't get misread as "not YNCA". Multi-line GETs (e.g. `status`) are drained with a `@SYS:VERSION=?` end-of-stream fence.
+A capability probe runs once per invocation. Devices that don't speak YNCA fail fast with exit 70 (`device does not support YNCA`) instead of a vague timeout. `@UNDEFINED` replies (unsupported command) map to exit 70; `@RESTRICTED` replies (valid but not allowed in the current device state) map to exit 75 with a retry hint. On connect the client sends a cheap `@SYS:MODELNAME=?` wake ping so a receiver in YNCA standby — which silently drops the first command while waking — doesn't get misread as "not YNCA". Multi-line GETs (e.g. `status`) are drained with a `@SYS:VERSION=?` end-of-stream fence; `watch` holds a separate long-lived connection with a 30 s keep-alive and reconnect/backoff. With `--debug`, YNCA wire traffic (`->`/`<-`) is traced on stderr.
+
+**Reverse-engineering a receiver:** `ynca dump` writes every supported `@SUB:FUNC=value` to a transcript; `ynca diff old.txt new.txt` shows what a newer model adds; `ynca list` and the REPL's `?MAIN` print the known function catalog. The dump format is exactly what the test suite replays as a device fixture.
 
 ## DHCP resilience
 
@@ -382,7 +419,18 @@ $ yamaha --debug volume +5
 ← 200 {"response_code":0}
 ```
 
-Retries are logged as `→ retry`; DHCP rediscovery as `→ rediscover alias=… udn=…`. Stdout stays clean — pipe to `jq` while debugging:
+Retries are logged as `→ retry`; DHCP rediscovery as `→ rediscover alias=… udn=…`. For the YNCA backend, `--debug` traces each line on the wire instead:
+
+```text
+$ yamaha --debug ynca status
+ynca -> @SYS:MODELNAME=?
+ynca <- @SYS:MODELNAME=RX-V583
+ynca -> @MAIN:BASIC=?
+ynca <- @MAIN:PWR=On
+...
+```
+
+Stdout stays clean — pipe to `jq` while debugging:
 
 ```bash
 yamaha --debug status 2> trace.log | jq .volume_db
