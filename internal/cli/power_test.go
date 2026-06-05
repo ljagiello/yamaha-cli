@@ -180,7 +180,7 @@ func TestShouldWaitForOn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("arg=%s,prior=%s", tc.arg, tc.prior), func(t *testing.T) {
-			if got := shouldWaitForOn(tc.arg, tc.prior); got != tc.want {
+			if got := shouldWaitForOn(tc.arg, yxc.PowerState(tc.prior)); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})

@@ -97,6 +97,110 @@ func TestSend_RoundTrip(t *testing.T) {
 	mu.Unlock()
 }
 
+// TestSendMulti_DrainsToFence verifies a fan-out GET collects every report
+// line up to (and excluding) the @SYS:VERSION fence echo.
+func TestSendMulti_DrainsToFence(t *testing.T) {
+	t.Parallel()
+	var sawSentinel atomic.Bool
+	addr := newFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@MAIN:BASIC=?":
+			// Fan-out: several report lines for one GET.
+			return "@MAIN:PWR=On\r\n@MAIN:INP=HDMI2\r\n@MAIN:VOL=-30.0"
+		case "@SYS:VERSION=?":
+			sawSentinel.Store(true)
+			return "@SYS:VERSION=1.00/2.00"
+		}
+		return "@UNDEFINED"
+	})
+
+	c, err := New(addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	lines, err := c.SendMulti(ctx, "@MAIN:BASIC=?")
+	if err != nil {
+		t.Fatalf("SendMulti: %v", err)
+	}
+	want := []string{"@MAIN:PWR=On", "@MAIN:INP=HDMI2", "@MAIN:VOL=-30.0"}
+	if len(lines) != len(want) {
+		t.Fatalf("got %d lines %v, want %d %v", len(lines), lines, len(want), want)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i, lines[i], want[i])
+		}
+	}
+	if !sawSentinel.Load() {
+		t.Error("server never received the @SYS:VERSION=? fence")
+	}
+}
+
+// TestSendMulti_EmptyBeforeFence covers a command that produces no report
+// lines (just the fence echo) — e.g. a PUT routed through SendMulti.
+func TestSendMulti_EmptyBeforeFence(t *testing.T) {
+	t.Parallel()
+	addr := newFakeYNCA(t, func(line string) string {
+		if line == "@SYS:VERSION=?" {
+			return "@SYS:VERSION=1.00/2.00"
+		}
+		return "" // no reply to the command itself
+	})
+	c, err := New(addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	lines, err := c.SendMulti(ctx, "@MAIN:PWR=On")
+	if err != nil {
+		t.Fatalf("SendMulti: %v", err)
+	}
+	if len(lines) != 0 {
+		t.Errorf("got %v, want no report lines", lines)
+	}
+}
+
+// TestSendMulti_NoFenceReturnsNoReply: if the receiver answers the command
+// but never echoes the @SYS:VERSION=? fence, the drain must return
+// ErrNoReply promptly (bounded by the timeout) rather than hang — a hang
+// here would freeze `ynca status` forever.
+func TestSendMulti_NoFenceReturnsNoReply(t *testing.T) {
+	t.Parallel()
+	addr := newFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@MAIN:BASIC=?":
+			return "@MAIN:PWR=On"
+		case "@SYS:VERSION=?":
+			return "" // never echo the fence
+		}
+		return "@UNDEFINED"
+	})
+	c, err := New(addr, WithTimeout(300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	start := time.Now()
+	_, err = c.SendMulti(context.Background(), "@MAIN:BASIC=?")
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrNoReply) {
+		t.Fatalf("SendMulti err = %v, want ErrNoReply", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("SendMulti took %v; expected to return near the 300ms timeout, not hang", elapsed)
+	}
+}
+
 func TestSend_AddsAtAndCRLF(t *testing.T) {
 	t.Parallel()
 	// Use a raw listener so we can inspect exact bytes.

@@ -28,6 +28,11 @@ func (s *state) newYXCClient(host string) (*yxc.Client, error) {
 
 // newYNCAClient builds a *ynca.Client for the given host with the given
 // per-request timeout. The caller is responsible for Close.
+//
+// WithWakeOnConnect is enabled so a receiver in YNCA standby is woken
+// before the first command (notably the Probe), instead of having that
+// first command silently dropped and the device misread as not speaking
+// YNCA.
 func (s *state) newYNCAClient(host string, timeout time.Duration) (*ynca.Client, error) {
-	return ynca.New(host, ynca.WithTimeout(timeout))
+	return ynca.New(host, ynca.WithTimeout(timeout), ynca.WithWakeOnConnect())
 }

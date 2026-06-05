@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // VolumeArg describes how to express a setVolume call. Construct one of
@@ -55,16 +56,27 @@ func (v VolumeArg) values() (url.Values, error) {
 	return out, nil
 }
 
-// validZone normalises and validates a zone identifier. Accepts "main"
-// or "zone2" (case-insensitive).
+// validZone normalises and validates a zone identifier (case-insensitive).
+//
+// It accepts the four canonical YXC zone ids — main, zone2, zone3, zone4 —
+// rather than gating on a device-specific allowlist. Which zones a given
+// receiver actually has is determined authoritatively by getFeatures
+// (Features.Zone[] / system.zone_num) at the CLI layer, and the receiver
+// itself rejects an unsupported zone with response_code != 0. Keeping this
+// a pure syntactic normaliser is what lets zone3/zone4 work on larger
+// receivers (AVENTAGE / RX-A) without touching every call site.
 func validZone(zone string) (string, error) {
-	switch zone {
-	case "main", "Main", "MAIN":
+	switch strings.ToLower(zone) {
+	case "main":
 		return "main", nil
-	case "zone2", "Zone2", "ZONE2":
+	case "zone2":
 		return "zone2", nil
+	case "zone3":
+		return "zone3", nil
+	case "zone4":
+		return "zone4", nil
 	default:
-		return "", fmt.Errorf("yxc: invalid zone %q (want %q or %q)", zone, "main", "zone2")
+		return "", fmt.Errorf("yxc: invalid zone %q (want main|zone2|zone3|zone4)", zone)
 	}
 }
 
@@ -287,3 +299,42 @@ func (c *Client) SetToneControl(ctx context.Context, zone string, arg ToneContro
 
 // IntPtr returns a pointer to n. Convenience for ToneControlArg literals.
 func IntPtr(n int) *int { return &n }
+
+// setZoneEnable issues a boolean `<zone>/<method>?enable=true|false` call.
+// It backs the on/off DSP switches (Pure Direct, Enhancer, Extra Bass,
+// Adaptive DRC). Callers are responsible for checking that the zone
+// advertises the corresponding func in getFeatures — the receiver returns
+// response_code != 0 for one it doesn't support.
+func (c *Client) setZoneEnable(ctx context.Context, zone, method string, on bool) error {
+	z, err := validZone(zone)
+	if err != nil {
+		return err
+	}
+	v := url.Values{}
+	v.Set("enable", strconv.FormatBool(on))
+	_, err = c.Do(ctx, z+"/"+method, v)
+	return err
+}
+
+// SetPureDirect toggles Pure Direct mode for the zone (func_list "direct").
+func (c *Client) SetPureDirect(ctx context.Context, zone string, on bool) error {
+	return c.setZoneEnable(ctx, zone, "setPureDirect", on)
+}
+
+// SetEnhancer toggles the Compressed Music Enhancer (func_list "enhancer").
+func (c *Client) SetEnhancer(ctx context.Context, zone string, on bool) error {
+	return c.setZoneEnable(ctx, zone, "setEnhancer", on)
+}
+
+// SetExtraBass toggles Extra Bass (func_list "extra_bass"). Present on
+// newer / larger receivers; func-gated at the CLI so it only surfaces
+// where supported.
+func (c *Client) SetExtraBass(ctx context.Context, zone string, on bool) error {
+	return c.setZoneEnable(ctx, zone, "setExtraBass", on)
+}
+
+// SetAdaptiveDRC toggles Adaptive DRC / dynamic-range compression
+// (func_list "adaptive_drc").
+func (c *Client) SetAdaptiveDRC(ctx context.Context, zone string, on bool) error {
+	return c.setZoneEnable(ctx, zone, "setAdaptiveDrc", on)
+}

@@ -16,7 +16,7 @@ Covers power, volume, mute, input, sound program, surround decoder, scene, tone,
 - [Watch](#watch)
 - [MusicCast Link](#musiccast-link)
 - [Raw passthrough](#raw-passthrough)
-- [YNCA passthrough](#ynca-passthrough)
+- [YNCA](#ynca)
 - [DHCP resilience](#dhcp-resilience)
 - [Debugging](#debugging)
 - [Security note](#security-note)
@@ -74,6 +74,12 @@ yamaha scene <1..N>                          # recall a scene (N from features)
 yamaha tone bass <-12..+12> | tone treble <-12..+12> | tone reset
 yamaha sleep 0|30|60|90|120|off              # sleep timer in minutes
 
+# Boolean DSP switches (each only acts on zones whose features advertise it):
+yamaha pure-direct on|off                    # Pure Direct
+yamaha enhancer on|off                       # Compressed Music Enhancer
+yamaha extra-bass on|off                     # Extra Bass (larger/newer models)
+yamaha adaptive-drc on|off                   # Adaptive dynamic-range compression
+
 # NetUSB / MusicCast playback engine:
 yamaha netusb info                           # now-playing payload
 yamaha netusb play|pause|stop|toggle
@@ -98,7 +104,11 @@ yamaha link info [<leader>]
 yamaha reboot --yes                          # always requires --yes
 yamaha watch [--device a,b,c]                # NDJSON push events
 yamaha raw <method> [k=v ...]                # generic YXC GET passthrough
-yamaha ynca <line>                           # TCP/50000 YNCA passthrough
+
+# Legacy YNCA (TCP/50000) — raw passthrough + typed subcommands for YNCA-only receivers:
+yamaha ynca <line>                           # raw passthrough (e.g. @MAIN:VOL=?)
+yamaha ynca status|power|volume|mute|input|sound
+yamaha ynca repl                             # interactive prompt
 
 # Discovery & config:
 yamaha discover [--add]                      # SSDP scan; --add saves to config
@@ -131,6 +141,8 @@ yamaha decoder dolby_surround
 yamaha scene 2
 yamaha tone bass +3
 yamaha tone reset
+yamaha pure-direct on                        # Pure Direct (feature-gated)
+yamaha enhancer off
 yamaha sleep 60                              # auto-off in 60 min
 
 # Tuner: FM/AM, recall a preset, list presets.
@@ -158,9 +170,11 @@ yamaha link dissolve
 yamaha raw system/setPartyMode enable=true
 yamaha raw netusb/setPlaybackMode mode=repeat type=track
 
-# YNCA passthrough — legacy line protocol on TCP/50000.
+# YNCA — legacy line protocol on TCP/50000 (raw + typed subcommands).
 yamaha ynca @MAIN:VOL=?
-yamaha ynca @SYS:MODELNAME=?
+yamaha ynca status
+yamaha ynca power on
+yamaha ynca volume up
 
 # System reboot — always requires --yes.
 yamaha reboot --yes
@@ -196,7 +210,7 @@ devices:
   living-room:
     host: 192.168.1.116
     udn: uuid:9ab0c000-f668-11de-9976-00a0defbe863    # auto-saved on discovery
-    default_zone: main                                 # main | zone2
+    default_zone: main                                 # main | zone2 | zone3 | zone4
   bedroom:
     host: 192.168.1.118
     udn: uuid:9ab0c000-f668-11de-9976-00a0defaa111
@@ -221,7 +235,7 @@ Flag wins over env wins over config:
 |---|---|---|
 | `YAMAHA_HOST` | `--host` | Anonymous; skips DHCP-resilience. |
 | `YAMAHA_DEVICE` | `--device` | Alias must exist in config. |
-| `YAMAHA_ZONE` | `--zone` | `main` or `zone2`. |
+| `YAMAHA_ZONE` | `--zone` | `main`, `zone2`, `zone3`, or `zone4`. |
 | `YAMAHA_DEBUG` | `--debug` | Truthy: `1`, `true`, `yes`, `on`. |
 | `NO_COLOR` | `--no-color` | Any non-empty value disables ANSI color. |
 
@@ -249,12 +263,13 @@ Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--o
 | 2   | Misuse / invalid CLI argument (cobra default, `--db` with `+N`, etc.) |
 | 64  | `EX_USAGE` — no device configured, non-interactive context |
 | 69  | `EX_UNAVAILABLE` — device unreachable (transport error, DHCP-rediscover failed, zero-found) |
-| 70  | `EX_SOFTWARE` — device returned non-zero `response_code` (feature unsupported, device not ready) |
+| 70  | `EX_SOFTWARE` — device returned non-zero `response_code`, or a YNCA `@UNDEFINED` reply (feature unsupported, device not ready) |
+| 75  | `EX_TEMPFAIL` — YNCA `@RESTRICTED`: the command is valid but not allowed in the current device state (e.g. zone in standby); retry after fixing it |
 | 130 | SIGINT (`cancelled by user`) |
 
 ## Zone scope
 
-`--zone {main|zone2}` only applies to zone-scoped commands. Default is the device's `default_zone` from config (or `main` if unset).
+`--zone {main|zone2|zone3|zone4}` only applies to zone-scoped commands. Default is the device's `default_zone` from config (or `main` if unset). yamaha-cli accepts any of the four canonical zone ids; whether your receiver actually has a given zone is decided by the device (an unsupported zone comes back as exit 70).
 
 | Command | Zone-scoped |
 |---|---|
@@ -267,6 +282,7 @@ Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--o
 | `decoder` | yes |
 | `scene` | yes |
 | `tone` | yes |
+| `pure-direct` / `enhancer` / `extra-bass` / `adaptive-drc` | yes (feature-gated per zone) |
 | `sleep` | yes |
 | `tuner *` | no (tuner is system-wide) |
 | `netusb *` | no |
@@ -275,7 +291,8 @@ Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--o
 | `link create` / `link dissolve` / `link info` | no |
 | `reboot` | no (system-wide; `--zone` is ignored) |
 | `raw` | no (caller supplies the method path) |
-| `ynca` | no |
+| `ynca <line>` / `ynca repl` | no |
+| `ynca status` / `power` / `volume` / `mute` / `input` / `sound` | yes (zone → YNCA subunit) |
 | `discover` | no |
 | `config show` / `config path` | no |
 | `completion` | no |
@@ -316,16 +333,31 @@ yamaha raw netusb/setPlaybackMode mode=repeat type=track
 
 This covers the ~184 endpoints in the YXC public spec — party mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, alarms, and so on.
 
-## YNCA passthrough
+## YNCA
 
-`yamaha ynca <line>` speaks the legacy line-based YNCA protocol on TCP/50000, used by classic AVR firmware (RX-V583 included). It's useful when YXC doesn't expose a particular control. The leading `@` is optional; the receiver's reply line is printed verbatim.
+YNCA is the legacy line-based control protocol on TCP/50000 — the *only* protocol some pre-MusicCast receivers speak, and a useful escape hatch on newer ones when YXC doesn't expose a particular control. `yamaha ynca` is both a raw passthrough and a small typed command set.
+
+**Typed subcommands** act on the `--zone`-mapped subunit (`main`→`MAIN`, `zone2`→`ZONE2`, …), giving a YNCA-only receiver the same kind of first-class surface YXC devices get:
+
+```bash
+yamaha ynca status                           # decoded power/volume/mute/input/sound (one @MAIN:BASIC=? GET)
+yamaha ynca power on|off|toggle
+yamaha ynca volume -- -30.5                  # absolute dB (rounded to the 0.5 dB grid); '--' since it's negative
+yamaha ynca volume up|down                   # nudge one step
+yamaha ynca mute on|off|toggle
+yamaha ynca input HDMI2
+yamaha ynca sound Standard
+yamaha ynca repl                             # interactive prompt over one persistent connection
+```
+
+**Raw passthrough** — send any YNCA line and print the reply verbatim (leading `@` optional):
 
 ```bash
 yamaha ynca @MAIN:VOL=?
 yamaha ynca @SYS:MODELNAME=?
 ```
 
-A capability probe runs once per invocation. Devices that don't speak YNCA fail fast with exit 70 (`device does not support YNCA`) instead of a vague timeout.
+A capability probe runs once per invocation. Devices that don't speak YNCA fail fast with exit 70 (`device does not support YNCA`) instead of a vague timeout. `@UNDEFINED` replies (unsupported command) map to exit 70; `@RESTRICTED` replies (valid but not allowed in the current device state) map to exit 75 with a retry hint. On connect the client sends a cheap `@SYS:MODELNAME=?` wake ping so a receiver in YNCA standby — which silently drops the first command while waking — doesn't get misread as "not YNCA". Multi-line GETs (e.g. `status`) are drained with a `@SYS:VERSION=?` end-of-stream fence.
 
 ## DHCP resilience
 

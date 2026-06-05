@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -30,10 +29,23 @@ type Client struct {
 	addr    string // host:port
 	timeout time.Duration
 
+	wakeOnConnect bool
+
 	mu      sync.Mutex
 	conn    net.Conn
 	scanner *bufio.Scanner
 }
+
+// wakeTimeout bounds how long the connect-time wake exchange waits for the
+// reply to BEGIN (see WithWakeOnConnect). Short on purpose: a healthy
+// receiver replies in milliseconds, and a sleeping one that drops the ping
+// just needs us to time out and proceed. A var so tests can shrink it.
+var wakeTimeout = 600 * time.Millisecond
+
+// wakeDrainIdle is how long the wake drain waits for MORE data once the
+// reply has started before concluding the wire is idle. Keeps the drain
+// fast (one short gap) while still consuming a trailing unsolicited push.
+var wakeDrainIdle = 40 * time.Millisecond
 
 // Option configures a Client.
 type Option func(*Client)
@@ -46,6 +58,22 @@ func WithTimeout(d time.Duration) Option {
 			c.timeout = d
 		}
 	}
+}
+
+// WithWakeOnConnect makes the client send a cheap `@SYS:MODELNAME=?` and
+// fully drain its reply immediately after connecting.
+//
+// A receiver in YNCA standby silently drops the FIRST command on a fresh
+// connection while it wakes (YNCA standby is ~40s). Without this, that
+// dropped command is often the Probe — so a sleeping-but-supported
+// receiver gets misreported as "doesn't support YNCA". The wake exchange
+// absorbs that first-command loss so the caller's real command (and the
+// probe) land on an awake device. The reply is consumed via a raw read so
+// it can never corrupt the next command; a sleeping device that drops the
+// ping just makes the short wake read time out. Ported from the ynca
+// reference library's connect-time keep-alive.
+func WithWakeOnConnect() Option {
+	return func(c *Client) { c.wakeOnConnect = true }
 }
 
 // WithPort overrides the TCP port (default 50000).
@@ -101,13 +129,72 @@ func (c *Client) dialLocked(ctx context.Context) error {
 	d := net.Dialer{Timeout: c.timeout}
 	conn, err := d.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
-		return fmt.Errorf("ynca: dial %s: %w", c.addr, err)
+		return &DialError{Addr: c.addr, Err: err}
 	}
 	c.conn = conn
 	c.scanner = bufio.NewScanner(conn)
 	c.scanner.Buffer(make([]byte, 0, 4096), 64*1024)
 	c.scanner.Split(splitCRLF)
+	if c.wakeOnConnect {
+		c.wakeLocked(ctx)
+	}
 	return nil
+}
+
+// wakeLocked performs a best-effort `@SYS:MODELNAME=?` exchange to wake a
+// standby receiver. Caller holds c.mu and c.conn is set. The reply is
+// drained directly off the connection — NOT through c.scanner — so the
+// scanner buffer stays pristine for the caller's real command and a
+// timed-out drain can't leave the scanner in a terminal state. Any
+// error/timeout is ignored.
+//
+// It drains EVERYTHING currently on the wire, not just the first line:
+// the receiver may push an unsolicited report (panel volume/input change,
+// standby transition) in the wake window, and stopping at that line's
+// newline would strand the @SYS:MODELNAME echo in the socket buffer to be
+// misread as the caller's first reply. So we wait up to the wake deadline
+// for the reply to begin, then keep reading until a brief idle gap with no
+// data — by which point the echo and any interleaved push are consumed.
+func (c *Client) wakeLocked(ctx context.Context) {
+	deadline := time.Now().Add(wakeTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
+		return
+	}
+	if err := c.conn.SetReadDeadline(deadline); err != nil {
+		return
+	}
+	if _, err := io.WriteString(c.conn, "@SYS:MODELNAME=?\r\n"); err != nil {
+		return
+	}
+	buf := make([]byte, 512)
+	for {
+		n, rerr := c.conn.Read(buf)
+		if rerr != nil { // idle-gap deadline or EOF: fully drained
+			break
+		}
+		if n == 0 { // no progress, no error: don't hot-spin
+			break
+		}
+		// The reply has started; shorten the window so we stop at the
+		// first idle gap rather than blocking for the full wake budget —
+		// but never PAST the original wake deadline. Clamping to that
+		// ceiling guarantees the drain is bounded by wakeTimeout even if a
+		// (pathological) peer streams report lines faster than wakeDrainIdle
+		// without ever pausing; otherwise the per-read deadline would keep
+		// advancing and the loop, holding c.mu, would never terminate.
+		next := time.Now().Add(wakeDrainIdle)
+		if next.After(deadline) {
+			next = deadline
+		}
+		_ = c.conn.SetReadDeadline(next)
+	}
+	// Clear the temporary deadlines so the caller's own deadline logic
+	// starts from a clean slate.
+	_ = c.conn.SetReadDeadline(time.Time{})
+	_ = c.conn.SetWriteDeadline(time.Time{})
 }
 
 // Send issues one YNCA line and returns the receiver's reply. The
@@ -215,6 +302,124 @@ func (c *Client) sendOnceLocked(ctx context.Context, line string) (reply string,
 		return "", io.EOF
 	}
 	return c.scanner.Text(), nil
+}
+
+// versionSentinel is the end-of-stream fence appended by SendMulti. Every
+// receiver answers @SYS:VERSION=? with @SYS:VERSION=<version>, so its echo
+// reliably marks "all report lines for the preceding command have now
+// arrived" — the technique the ynca reference library uses to drain a
+// fan-out GET without guessing how many lines it produces.
+const versionSentinel = "@SYS:VERSION=?"
+
+// versionEchoPrefix is what the fence echo looks like coming back.
+const versionEchoPrefix = "@SYS:VERSION="
+
+// SendMulti issues one YNCA line that may fan out to several report lines
+// (e.g. a `@MAIN:BASIC=?` GET, which a receiver answers with many
+// `@MAIN:FUNC=VALUE` lines), then drains every reply up to and including
+// the echo of a `@SYS:VERSION=?` fence it appends. It returns the
+// intervening report lines; the fence echo is consumed, not returned.
+//
+// Use this for GETs whose reply length isn't known in advance. Send
+// remains the one-line-in/one-line-out path for simple PUTs and
+// single-value GETs. Unlike Send, SendMulti does not classify
+// @UNDEFINED/@RESTRICTED into typed errors — for a fan-out GET those can
+// be legitimate per-field replies, so the caller inspects the returned
+// lines (see parseLine).
+func (c *Client) SendMulti(ctx context.Context, line string) ([]string, error) {
+	if line == "" {
+		return nil, errors.New("ynca: empty line")
+	}
+	if !strings.HasPrefix(line, "@") {
+		line = "@" + line
+	}
+	line = strings.TrimRight(line, "\r\n")
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	lines, err := c.sendMultiOnceLocked(ctx, line)
+	if err != nil && isConnReset(err) {
+		_ = c.closeLocked()
+		lines, err = c.sendMultiOnceLocked(ctx, line)
+	}
+	return lines, err
+}
+
+// sendMultiOnceLocked performs one write(command)+write(fence)+drain
+// cycle. Caller must hold c.mu. Mirrors sendOnceLocked's connection and
+// ctx-watchdog handling, but reads until the fence echo instead of a
+// single line.
+func (c *Client) sendMultiOnceLocked(ctx context.Context, line string) (lines []string, err error) {
+	if c.conn == nil {
+		if derr := c.dialLocked(ctx); derr != nil {
+			return nil, derr
+		}
+	}
+
+	// Any non-nil return leaves the stream in an undefined state (partial
+	// drain, half-written fence, unread tail after ctx-cancel). Close so
+	// the next call redials clean. Registered before the watchdog-stop
+	// defer so it runs after the watchdog has stopped touching c.conn.
+	defer func() {
+		if err != nil {
+			_ = c.closeLocked()
+		}
+	}()
+
+	deadline := time.Now().Add(c.timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if derr := c.conn.SetWriteDeadline(deadline); derr != nil {
+		return nil, derr
+	}
+	if derr := c.conn.SetReadDeadline(deadline); derr != nil {
+		return nil, derr
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			_ = c.conn.SetReadDeadline(time.Unix(1, 0))
+			_ = c.conn.SetWriteDeadline(time.Unix(1, 0))
+		case <-stop:
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
+
+	if _, werr := io.WriteString(c.conn, line+"\r\n"+versionSentinel+"\r\n"); werr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, werr
+	}
+
+	for c.scanner.Scan() {
+		reply := c.scanner.Text()
+		if strings.HasPrefix(reply, versionEchoPrefix) {
+			// Fence reached: every prior report line has been drained.
+			return lines, nil
+		}
+		lines = append(lines, reply)
+	}
+	// Stream ended before the fence echo.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if serr := c.scanner.Err(); serr != nil {
+		if isTimeout(serr) {
+			return nil, ErrNoReply
+		}
+		return nil, serr
+	}
+	return nil, io.EOF
 }
 
 // Probe issues `@SYS:VERSION=?` and returns the firmware version, e.g.

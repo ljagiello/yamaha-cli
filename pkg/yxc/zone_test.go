@@ -44,10 +44,82 @@ func TestSetSurroundDecoder(t *testing.T) {
 		}))
 		defer srv.Close()
 		c := newTestClient(t, srv)
-		if err := c.SetSurroundDecoder(context.Background(), "zone3", "auto"); err == nil {
+		// zone9 is not one of the four canonical zones (main/zone2/zone3/
+		// zone4), so validZone rejects it before any wire call.
+		if err := c.SetSurroundDecoder(context.Background(), "zone9", "auto"); err == nil {
 			t.Fatal("expected error for bad zone")
 		}
 	})
+}
+
+// TestValidZone_AcceptsAllFourZones proves zone3/zone4 are now routed to
+// the wire (the unblock for AVENTAGE / RX-A receivers) and that case is
+// normalised, while a non-canonical token is still rejected before any
+// network call.
+func TestValidZone_AcceptsAllFourZones(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		{"main", "main"},
+		{"zone2", "zone2"},
+		{"ZONE3", "zone3"},
+		{"Zone4", "zone4"},
+	} {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.URL.Path
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		}))
+		c := newTestClient(t, srv)
+		if err := c.SetPower(context.Background(), tc.in, "on"); err != nil {
+			srv.Close()
+			t.Fatalf("SetPower(%q): %v", tc.in, err)
+		}
+		want := "/YamahaExtendedControl/v1/" + tc.want + "/setPower"
+		if got != want {
+			srv.Close()
+			t.Fatalf("SetPower(%q) path = %s, want %s", tc.in, got, want)
+		}
+		srv.Close()
+	}
+}
+
+// TestSetZoneEnable_Switches verifies the URL shape + enable param for the
+// boolean DSP switches, including the zone routing and bool encoding.
+func TestSetZoneEnable_Switches(t *testing.T) {
+	cases := []struct {
+		name    string
+		call    func(c *Client) error
+		on      bool
+		wantURL string
+	}{
+		{"pure-direct on", func(c *Client) error { return c.SetPureDirect(context.Background(), "main", true) }, true,
+			"/YamahaExtendedControl/v1/main/setPureDirect?enable=true"},
+		{"enhancer off", func(c *Client) error { return c.SetEnhancer(context.Background(), "zone2", false) }, false,
+			"/YamahaExtendedControl/v1/zone2/setEnhancer?enable=false"},
+		{"extra-bass on", func(c *Client) error { return c.SetExtraBass(context.Background(), "main", true) }, true,
+			"/YamahaExtendedControl/v1/main/setExtraBass?enable=true"},
+		{"adaptive-drc on", func(c *Client) error { return c.SetAdaptiveDRC(context.Background(), "main", true) }, true,
+			"/YamahaExtendedControl/v1/main/setAdaptiveDrc?enable=true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Path + "?" + r.URL.RawQuery
+				_, _ = w.Write([]byte(`{"response_code":0}`))
+			}))
+			defer srv.Close()
+			c := newTestClient(t, srv)
+			if err := tc.call(c); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if got != tc.wantURL {
+				t.Fatalf("URL mismatch:\n got %s\nwant %s", got, tc.wantURL)
+			}
+		})
+	}
 }
 
 // TestRecallScene verifies URL shape and num >= 1 validation.

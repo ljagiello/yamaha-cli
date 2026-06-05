@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -50,33 +51,15 @@ func newInputCmd() *cobra.Command {
 	}
 }
 
-// validateInput resolves features (cache hit, on-disk fetch, or one
-// auto-refresh on miss) and verifies the input name. Returns the
-// validated features so the caller can pass them to SetInput for the
-// auto-prepareInputChange behaviour.
+// validateInput verifies the input name against the active zone's input
+// list and returns the resolved features so the caller can pass them to
+// SetInput for the auto-prepareInputChange behaviour.
 func validateInput(ctx context.Context, s *state, name string) (*yxc.Features, error) {
-	feats, err := loadFeatures(ctx, s, s.refreshFeats)
+	feats, err := validateAgainstFeatures(ctx, s, "input", name, allowedInputs)
 	if err != nil {
 		return nil, err
 	}
-	if isInputAllowed(feats, s.zone, name) {
-		return feats, nil
-	}
-	// One refresh on miss — covers the "user upgraded firmware mid-week"
-	// case from  ("getFeatures cache invalidation").
-	feats, err = loadFeatures(ctx, s, true)
-	if err != nil {
-		return nil, err
-	}
-	if isInputAllowed(feats, s.zone, name) {
-		return feats, nil
-	}
-	suggestions := yxc.DidYouMean(name, allowedInputs(feats, s.zone), 3)
-	return nil, &ValidationError{
-		Kind:        "input",
-		Unknown:     name,
-		Suggestions: suggestions,
-	}
+	return feats, nil
 }
 
 func allowedInputs(feats *yxc.Features, zone string) []string {
@@ -92,11 +75,7 @@ func allowedInputs(feats *yxc.Features, zone string) []string {
 	return feats.SystemInputIDs()
 }
 
+// isInputAllowed reports whether name is in the active zone's input set.
 func isInputAllowed(feats *yxc.Features, zone, name string) bool {
-	for _, in := range allowedInputs(feats, zone) {
-		if in == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowedInputs(feats, zone), name)
 }

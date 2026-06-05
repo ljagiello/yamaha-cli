@@ -392,6 +392,54 @@ func TestRunNetUSB_InfoRendersMetadata(t *testing.T) {
 	}
 }
 
+// TestFormatPlaybackClock covers the mm:ss / h:mm:ss rendering and the
+// empty-string-for-zero convention.
+func TestFormatPlaybackClock(t *testing.T) {
+	cases := []struct {
+		sec  int
+		want string
+	}{
+		{0, ""},
+		{-5, ""},
+		{5, "0:05"},
+		{83, "1:23"},
+		{3600, "1:00:00"},
+		{3725, "1:02:05"},
+	}
+	for _, tc := range cases {
+		got := formatPlaybackClock(time.Duration(tc.sec) * time.Second)
+		if got != tc.want {
+			t.Errorf("formatPlaybackClock(%ds) = %q, want %q", tc.sec, got, tc.want)
+		}
+	}
+}
+
+// TestBuildPlayInfoPayload_TypedFieldsAndDurations asserts the typed
+// enums render as plain strings and the human durations are emitted.
+func TestBuildPlayInfoPayload_TypedFieldsAndDurations(t *testing.T) {
+	pi := &yxc.PlayInfo{
+		Input:     "server",
+		Playback:  yxc.PlaybackStatePlay,
+		Repeat:    yxc.RepeatOff,
+		Shuffle:   yxc.ShuffleOn,
+		PlayTime:  83,
+		TotalTime: 300,
+	}
+	out := buildPlayInfoPayload(pi)
+	if got, ok := out["playback"].(string); !ok || got != "play" {
+		t.Errorf("playback = %v (%T), want string \"play\"", out["playback"], out["playback"])
+	}
+	if got, ok := out["repeat"].(string); !ok || got != "off" {
+		t.Errorf("repeat = %v, want \"off\"", out["repeat"])
+	}
+	if out["play_time_human"] != "1:23" {
+		t.Errorf("play_time_human = %v, want \"1:23\"", out["play_time_human"])
+	}
+	if out["total_time_human"] != "5:00" {
+		t.Errorf("total_time_human = %v, want \"5:00\"", out["total_time_human"])
+	}
+}
+
 // TestMapPlaybackVerb covers the verb→Playback mapping table used by the
 // single-verb commands.
 func TestMapPlaybackVerb(t *testing.T) {

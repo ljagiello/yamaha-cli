@@ -45,7 +45,7 @@ func newPowerCmd() *cobra.Command {
 
 			// For toggle we need to know the prior state to decide
 			// whether to wait afterwards.
-			var priorPower string
+			var priorPower yxc.PowerState
 			if yxcPower == "toggle" && !s.noWait {
 				priorErr := runWithRediscover(ctx, s, func(c *yxc.Client) error {
 					st, e := c.GetStatus(ctx, s.zone)
@@ -98,13 +98,14 @@ func mapPowerArg(arg string) (string, error) {
 // shouldWaitForOn returns true when the issued power command will end up
 // in the "on" state. For "on" it's unconditional. For "toggle" it
 // depends on the prior state (toggle from standby → on; toggle from on →
-// standby, no wait).
-func shouldWaitForOn(arg, prior string) bool {
+// standby, no wait). YXC reports only on/standby, so any non-on prior is
+// treated as "toggle will turn it on".
+func shouldWaitForOn(arg string, prior yxc.PowerState) bool {
 	switch arg {
 	case "on":
 		return true
 	case "toggle":
-		return prior == "standby" || prior == "off"
+		return prior != yxc.PowerOn
 	}
 	return false
 }
@@ -156,7 +157,7 @@ func pollPowerOnce(ctx context.Context, s *state) (bool, error) {
 		if e != nil {
 			return e
 		}
-		on = st.Power == "on"
+		on = st.Power == yxc.PowerOn
 		return nil
 	})
 	if err != nil {

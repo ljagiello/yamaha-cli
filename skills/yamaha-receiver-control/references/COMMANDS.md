@@ -8,7 +8,7 @@ All commands accept the global flags below. Run `yamaha <cmd> --help` for cobra'
 |---|---|---|
 | `--host <ip>` | `YAMAHA_HOST` | Bypass config; talk to this IP directly. Anonymous (no DHCP-resilience). |
 | `--device <alias>` | `YAMAHA_DEVICE` | Use the named device from config. |
-| `--zone <main\|zone2>` | `YAMAHA_ZONE` | Override the zone for zone-scoped commands. Default: device's `default_zone`, else `main`. |
+| `--zone <main\|zone2\|zone3\|zone4>` | `YAMAHA_ZONE` | Override the zone for zone-scoped commands. Default: device's `default_zone`, else `main`. Any of the four canonical zones is accepted; the receiver rejects a zone it lacks (exit 70). |
 | `-o, --output <fmt>` | — | `auto` (default), `json`, `yaml`, `table`. `auto` = table on TTY, JSON when piped. |
 | `--no-color` | `NO_COLOR` (any non-empty value) | Disable ANSI styling in table mode. |
 | `--debug` | `YAMAHA_DEBUG` (truthy: `1`, `true`, `yes`, `on`) | Log every YXC request/response to stderr. |
@@ -28,6 +28,7 @@ All commands accept the global flags below. Run `yamaha <cmd> --help` for cobra'
 | `decoder <type>` | yes | Set surround decoder type. Validated against `zone.surr_decoder_type_list`. |
 | `scene <1..N>` | yes | Recall scene N. Bounds-checked against `zone.scene_num`. |
 | `tone bass <-12..+12>` / `tone treble <-12..+12>` / `tone reset` | yes | Adjust bass/treble (range from `zone.range_step.tone_control`). `reset` switches to mode=auto with bass=0, treble=0. |
+| `pure-direct on\|off` / `enhancer on\|off` / `extra-bass on\|off` / `adaptive-drc on\|off` | yes | Boolean DSP switches. Each is feature-gated on the zone's `func_list` (`direct` / `enhancer` / `extra_bass` / `adaptive_drc`); an unsupported control exits 2 with a clear message instead of hitting the device. |
 | `sleep 0\|30\|60\|90\|120\|off` | yes | Set zone sleep timer (minutes). `off` ≡ `0`. |
 | `tuner status` | no | Print band/freq/preset for the active band; the inactive band is included as a nested map. |
 | `tuner fm <MHz>` | no | Tune FM (e.g. `102.5`). Validated against `tuner.range_step.fm_freq` when known. |
@@ -47,7 +48,9 @@ All commands accept the global flags below. Run `yamaha <cmd> --help` for cobra'
 | `reboot --yes` | no | Request a system reboot. `--yes` is mandatory. Post-ack transport errors are treated as success (the receiver drops TCP mid-reboot). |
 | `watch [--device a,b,c]` | no | Subscribe to UDP push events; emit NDJSON (one event per line). Auto-reconnect with exponential backoff (1 s → 60 s) on a 30 s silent window. SIGINT exits cleanly. |
 | `raw <method> [k=v ...]` | no | Send a raw YXC request. Method is the YXC path (`system/setPartyMode`, `netusb/setPlaybackMode`, …). Repeated keys append (multi-value). |
-| `ynca <line>` | no | Send one YNCA line on TCP/50000. Leading `@` is optional. Probes once per invocation; non-YNCA devices exit 70 with a clear message. |
+| `ynca <line>` | no | Raw YNCA passthrough on TCP/50000. Leading `@` optional; reply printed verbatim. Probes once per invocation; non-YNCA devices exit 70. `@UNDEFINED`→exit 70, `@RESTRICTED`→exit 75. Sends a `@SYS:MODELNAME=?` wake ping on connect. |
+| `ynca status\|power\|volume\|mute\|input\|sound` | yes (zone→subunit) | Typed YNCA control for YNCA-only receivers, acting on the `--zone`-mapped subunit (main→MAIN, …). `status` decodes one `@MAIN:BASIC=?` GET; `volume` takes absolute dB (pass negatives after `--`) or `up`/`down`. |
+| `ynca repl` | no | Interactive YNCA prompt over one persistent connection (one line per command; `exit`/`quit`/Ctrl-D to leave). |
 | `discover [--add]` | no | SSDP scan. Without `--add`: print found Yamaha devices. With `--add`: interactive prompt to save one to config (wizards through pick + alias). |
 | `config show` | no | Print resolved config (JSON/YAML/table per `--output`). |
 | `config path` | no | Print absolute config file path. |
@@ -113,6 +116,8 @@ Errors:
   "shuffle": "off",
   "play_time": 73,
   "total_time": 245,
+  "play_time_human": "1:13",
+  "total_time_human": "4:05",
   "artist": "Brian Eno",
   "album": "Ambient 1: Music for Airports",
   "track": "1/1",
@@ -120,7 +125,7 @@ Errors:
 }
 ```
 
-Empty metadata fields (artist/album/track/albumart_url) are dropped from the payload.
+`play_time_human`/`total_time_human` are the raw seconds rendered as `m:ss` (or `h:mm:ss`); a zero/absent length renders as `""`. Empty metadata fields (artist/album/track/albumart_url) are dropped from the payload.
 
 ### `tuner presets` / `preset list`
 

@@ -22,7 +22,7 @@ type DeviceInfo struct {
 // preserved on the wire but ignored here.
 type Status struct {
 	ResponseCode    int           `json:"response_code"`
-	Power           string        `json:"power"` // "on" | "standby"
+	Power           PowerState    `json:"power"` // on | standby (see enums.go)
 	Volume          int           `json:"volume"`
 	Mute            bool          `json:"mute"`
 	Input           string        `json:"input"`
@@ -119,7 +119,8 @@ type Features struct {
 	NetUSB       *NetUSBFeatures `json:"netusb,omitempty"`
 }
 
-// ZoneByID returns the named zone ("main" | "zone2") or nil if absent.
+// ZoneByID returns the named zone (main | zone2 | zone3 | zone4) or nil
+// if the device doesn't advertise it in getFeatures.
 func (f *Features) ZoneByID(id string) *ZoneFeatures {
 	if f == nil {
 		return nil

@@ -49,30 +49,12 @@ func newDecoderCmd() *cobra.Command {
 	}
 }
 
-// validateSurroundDecoder resolves features and verifies the decoder type
-// against the zone's surr_decoder_type_list. There's no Features helper so
-// we read ZoneByID directly.
+// validateSurroundDecoder verifies the decoder type against the active
+// zone's surr_decoder_type_list (see validateAgainstFeatures for the
+// shared flow).
 func validateSurroundDecoder(ctx context.Context, s *state, decoderType string) error {
-	feats, err := loadFeatures(ctx, s, s.refreshFeats)
-	if err != nil {
-		return err
-	}
-	if isDecoderAllowed(feats, s.zone, decoderType) {
-		return nil
-	}
-	feats, err = loadFeatures(ctx, s, true)
-	if err != nil {
-		return err
-	}
-	if isDecoderAllowed(feats, s.zone, decoderType) {
-		return nil
-	}
-	suggestions := yxc.DidYouMean(decoderType, surroundDecoderList(feats, s.zone), 3)
-	return &ValidationError{
-		Kind:        "surround decoder",
-		Unknown:     decoderType,
-		Suggestions: suggestions,
-	}
+	_, err := validateAgainstFeatures(ctx, s, "surround decoder", decoderType, surroundDecoderList)
+	return err
 }
 
 func surroundDecoderList(feats *yxc.Features, zone string) []string {
@@ -84,13 +66,4 @@ func surroundDecoderList(feats *yxc.Features, zone string) []string {
 		return nil
 	}
 	return z.SurrDecoderTypeList
-}
-
-func isDecoderAllowed(feats *yxc.Features, zone, decoderType string) bool {
-	for _, t := range surroundDecoderList(feats, zone) {
-		if t == decoderType {
-			return true
-		}
-	}
-	return false
 }

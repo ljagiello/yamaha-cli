@@ -136,7 +136,8 @@ power=$(yamaha status --output json | jq -r .power)
 | 2 | CLI usage error (invalid flag combo) | Fix the command |
 | 64 | No device configured, non-interactive | Set `YAMAHA_HOST` or `--host` |
 | 69 | Device unreachable (transport failure, retry exhausted) | Network problem; receiver may be off |
-| 70 | YXC `response_code != 0` (feature unsupported, device not ready) | Check `yxc_response_code` in error JSON |
+| 70 | YXC `response_code != 0`, or YNCA `@UNDEFINED` (feature unsupported, device not ready) | Check `yxc_response_code` in error JSON |
+| 75 | YNCA `@RESTRICTED` — valid command, not allowed in the current device state (e.g. zone in standby) | Fix device state (power on the zone) and retry |
 | 130 | SIGINT during a non-watch command | User cancelled |
 
 With `--output json`, failed commands also emit a structured error to stdout:

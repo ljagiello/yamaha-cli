@@ -16,6 +16,7 @@ import (
 	"github.com/ljagiello/yamaha-cli/internal/config"
 	"github.com/ljagiello/yamaha-cli/internal/debuglog"
 	"github.com/ljagiello/yamaha-cli/internal/output"
+	"github.com/ljagiello/yamaha-cli/pkg/ynca"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
@@ -30,7 +31,7 @@ type state struct {
 	cfg          *config.Config
 	alias        string        // empty when device was resolved anonymously (--host / YAMAHA_HOST)
 	device       config.Device // active device (Host always set)
-	zone         string        // resolved active zone ("main" / "zone2")
+	zone         string        // resolved active zone (main | zone2 | zone3 | zone4)
 	client       *yxc.Client   // built from device.Host
 	debug        *debuglog.Logger
 	refreshFeats bool
@@ -103,7 +104,7 @@ func wrapTransportError(rootCmd *cobra.Command, err error) error {
 	if err == nil {
 		return nil
 	}
-	if !yxc.IsTransport(err) {
+	if !yxc.IsTransport(err) && !ynca.IsTransport(err) {
 		return err
 	}
 	var already *unreachableError
@@ -145,7 +146,7 @@ func newRootCmd() *cobra.Command {
 	pf := cmd.PersistentFlags()
 	pf.String("host", "", "device IP/hostname (overrides config; sets YAMAHA_HOST)")
 	pf.String("device", "", "alias from config (sets YAMAHA_DEVICE)")
-	pf.String("zone", "", "zone to act on: main | zone2")
+	pf.String("zone", "", "zone to act on: main | zone2 | zone3 | zone4")
 	pf.StringP("output", "o", "auto", "output format: auto | json | yaml | table")
 	pf.Bool("no-color", false, "disable ANSI color in table mode (also: NO_COLOR env)")
 	pf.Bool("debug", false, "trace YXC requests/responses on stderr (also: YAMAHA_DEBUG)")
@@ -173,6 +174,11 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newToneCmd())
 	cmd.AddCommand(newSleepCmd())
 	cmd.AddCommand(newRebootCmd())
+	// Boolean DSP switches (pure-direct, enhancer, extra-bass,
+	// adaptive-drc), each feature-gated on the zone's func_list.
+	for _, c := range newZoneSwitchCmds() {
+		cmd.AddCommand(c)
+	}
 
 	// Phase 2: tuner / netusb / preset (parent commands wire their own subs).
 	cmd.AddCommand(newTunerCmd())
@@ -264,6 +270,15 @@ func setupState(cmd *cobra.Command) error {
 	}
 	if zone == "" {
 		zone = "main"
+	}
+	// Reject syntactically-invalid zone tokens up front (exit 2) so the
+	// user gets a clear message instead of a downstream "yxc: invalid
+	// zone" wrapped in a transport-shaped failure. Whether the device
+	// actually has the requested zone is the receiver's call (getFeatures
+	// / response_code), not ours.
+	zone, err = canonicalZone(zone)
+	if err != nil {
+		return err
 	}
 
 	s := &state{

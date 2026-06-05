@@ -107,13 +107,9 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		if ferr != nil {
 			return yxc.VolumeArg{}, newUsageError("invalid db value %q", raw)
 		}
-		// Inverse of volumeIntToDB using the device's dB range_step
-		// (falls back to the RX-V integer-step convention when absent).
-		dbMin, dbStep := -80.5, 0.5
-		if a, _, b, ok := feats.VolumeRangeDB(s.zone); ok && b > 0 {
-			dbMin, dbStep = a, b
-		}
-		n := int(math.Round((f - dbMin) / dbStep))
+		// Inverse of Features.VolumeIntToDB, sharing the same dB scale
+		// (device range_step, or the RX-V fallback when absent).
+		n := feats.VolumeDBToInt(s.zone, f)
 		return yxc.VolumeAbsolute(clampInt(n, min, max)), nil
 	}
 	if percentFlag {

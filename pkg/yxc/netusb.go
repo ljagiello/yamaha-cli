@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // Playback is the set of values accepted by netusb/setPlayback.
@@ -42,19 +43,26 @@ func validPlayback(p Playback) bool {
 // by the CLI are modelled; unmodelled fields are preserved on the wire
 // but ignored here.
 type PlayInfo struct {
-	ResponseCode int    `json:"response_code"`
-	Input        string `json:"input"`
-	Playback     string `json:"playback"` // "play" | "stop" | "pause"
-	Repeat       string `json:"repeat"`   // "off" | "one" | "all"
-	Shuffle      string `json:"shuffle"`  // "off" | "on" | "songs" | "albums"
-	PlayTime     int    `json:"play_time"`
-	TotalTime    int    `json:"total_time"`
-	Artist       string `json:"artist,omitempty"`
-	Album        string `json:"album,omitempty"`
-	Track        string `json:"track,omitempty"`
-	AlbumArtURL  string `json:"albumart_url,omitempty"`
-	AlbumArtID   int    `json:"albumart_id,omitempty"`
+	ResponseCode int           `json:"response_code"`
+	Input        string        `json:"input"`
+	Playback     PlaybackState `json:"playback"` // play | stop | pause (see enums.go)
+	Repeat       RepeatMode    `json:"repeat"`   // off | one | all
+	Shuffle      ShuffleMode   `json:"shuffle"`  // off | on | songs | albums
+	PlayTime     int           `json:"play_time"`
+	TotalTime    int           `json:"total_time"`
+	Artist       string        `json:"artist,omitempty"`
+	Album        string        `json:"album,omitempty"`
+	Track        string        `json:"track,omitempty"`
+	AlbumArtURL  string        `json:"albumart_url,omitempty"`
+	AlbumArtID   int           `json:"albumart_id,omitempty"`
 }
+
+// Elapsed returns the elapsed playback position as a time.Duration.
+func (pi *PlayInfo) Elapsed() time.Duration { return playTimeToDuration(pi.PlayTime) }
+
+// Total returns the track's total duration. Zero when the input doesn't
+// report a length (e.g. a live stream).
+func (pi *PlayInfo) Total() time.Duration { return playTimeToDuration(pi.TotalTime) }
 
 // ListInfo mirrors `netusb/getListInfo`. The list is paginated; callers
 // supply Index/Size to walk through the menu.
