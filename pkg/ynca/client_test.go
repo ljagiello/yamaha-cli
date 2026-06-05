@@ -169,6 +169,38 @@ func TestSendMulti_EmptyBeforeFence(t *testing.T) {
 	}
 }
 
+// TestSendMulti_NoFenceReturnsNoReply: if the receiver answers the command
+// but never echoes the @SYS:VERSION=? fence, the drain must return
+// ErrNoReply promptly (bounded by the timeout) rather than hang — a hang
+// here would freeze `ynca status` forever.
+func TestSendMulti_NoFenceReturnsNoReply(t *testing.T) {
+	t.Parallel()
+	addr := newFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@MAIN:BASIC=?":
+			return "@MAIN:PWR=On"
+		case "@SYS:VERSION=?":
+			return "" // never echo the fence
+		}
+		return "@UNDEFINED"
+	})
+	c, err := New(addr, WithTimeout(300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	start := time.Now()
+	_, err = c.SendMulti(context.Background(), "@MAIN:BASIC=?")
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrNoReply) {
+		t.Fatalf("SendMulti err = %v, want ErrNoReply", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("SendMulti took %v; expected to return near the 300ms timeout, not hang", elapsed)
+	}
+}
+
 func TestSend_AddsAtAndCRLF(t *testing.T) {
 	t.Parallel()
 	// Use a raw listener so we can inspect exact bytes.

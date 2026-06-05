@@ -2,7 +2,6 @@ package ynca
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -37,11 +36,16 @@ type Client struct {
 	scanner *bufio.Scanner
 }
 
-// wakeTimeout bounds the connect-time wake exchange (see WithWakeOnConnect).
-// Short on purpose: a healthy receiver replies in milliseconds, and a
-// sleeping one that drops the ping just needs us to time out and proceed.
-// A var so tests can shrink it.
+// wakeTimeout bounds how long the connect-time wake exchange waits for the
+// reply to BEGIN (see WithWakeOnConnect). Short on purpose: a healthy
+// receiver replies in milliseconds, and a sleeping one that drops the ping
+// just needs us to time out and proceed. A var so tests can shrink it.
 var wakeTimeout = 600 * time.Millisecond
+
+// wakeDrainIdle is how long the wake drain waits for MORE data once the
+// reply has started before concluding the wire is idle. Keeps the drain
+// fast (one short gap) while still consuming a trailing unsolicited push.
+var wakeDrainIdle = 40 * time.Millisecond
 
 // Option configures a Client.
 type Option func(*Client)
@@ -138,12 +142,19 @@ func (c *Client) dialLocked(ctx context.Context) error {
 }
 
 // wakeLocked performs a best-effort `@SYS:MODELNAME=?` exchange to wake a
-// standby receiver. Caller holds c.mu and c.conn is set. The reply (a
-// MODELNAME value, an @UNDEFINED, or nothing if the sleeping device
-// dropped the ping) is drained directly off the connection — NOT through
-// c.scanner — so the scanner buffer stays pristine for the caller's real
-// command and a timed-out drain can't leave the scanner in a terminal
-// state. Any error/timeout is ignored.
+// standby receiver. Caller holds c.mu and c.conn is set. The reply is
+// drained directly off the connection — NOT through c.scanner — so the
+// scanner buffer stays pristine for the caller's real command and a
+// timed-out drain can't leave the scanner in a terminal state. Any
+// error/timeout is ignored.
+//
+// It drains EVERYTHING currently on the wire, not just the first line:
+// the receiver may push an unsolicited report (panel volume/input change,
+// standby transition) in the wake window, and stopping at that line's
+// newline would strand the @SYS:MODELNAME echo in the socket buffer to be
+// misread as the caller's first reply. So we wait up to the wake deadline
+// for the reply to begin, then keep reading until a brief idle gap with no
+// data — by which point the echo and any interleaved push are consumed.
 func (c *Client) wakeLocked(ctx context.Context) {
 	deadline := time.Now().Add(wakeTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -158,18 +169,18 @@ func (c *Client) wakeLocked(ctx context.Context) {
 	if _, err := io.WriteString(c.conn, "@SYS:MODELNAME=?\r\n"); err != nil {
 		return
 	}
-	// Drain up to one reply line straight from the conn. Reading raw
-	// (instead of via c.scanner) keeps the scanner untouched for the
-	// caller and avoids the dead-scanner problem a timed-out Scan causes.
-	buf := make([]byte, 256)
+	buf := make([]byte, 512)
 	for {
 		n, rerr := c.conn.Read(buf)
-		if n > 0 && bytes.IndexByte(buf[:n], '\n') >= 0 {
+		if rerr != nil { // idle-gap deadline or EOF: fully drained
 			break
 		}
-		if rerr != nil {
+		if n == 0 { // no progress, no error: don't hot-spin
 			break
 		}
+		// The reply has started; shorten the window so we stop at the
+		// first idle gap rather than blocking for the full wake budget.
+		_ = c.conn.SetReadDeadline(time.Now().Add(wakeDrainIdle))
 	}
 	// Clear the temporary deadlines so the caller's own deadline logic
 	// starts from a clean slate.

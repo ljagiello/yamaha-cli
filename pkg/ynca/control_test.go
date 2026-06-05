@@ -1,7 +1,10 @@
 package ynca
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -111,6 +114,72 @@ func TestWakeOnConnect_DroppedPing(t *testing.T) {
 	}
 	if reply != "@MAIN:PWR=On" {
 		t.Errorf("reply = %q, want @MAIN:PWR=On", reply)
+	}
+}
+
+// TestWakeOnConnect_DrainsInterleavedPush is the regression test for the
+// review's finding #2: a receiver pushes an unsolicited report line in the
+// wake window, BEFORE the @SYS:MODELNAME echo. The wake must drain BOTH
+// (the push and the echo) so neither is stranded in the socket buffer to
+// be misread as the caller's first reply. The push and echo arrive in
+// separate writes with a sub-idle-window gap to exercise the multi-read
+// drain path.
+func TestWakeOnConnect_DrainsInterleavedPush(t *testing.T) {
+	prev := wakeTimeout
+	wakeTimeout = 400 * time.Millisecond
+	defer func() { wakeTimeout = prev }()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var wg sync.WaitGroup
+	go func() {
+		for {
+			conn, aerr := l.Accept()
+			if aerr != nil {
+				return
+			}
+			wg.Add(1)
+			go func(c net.Conn) {
+				defer wg.Done()
+				defer c.Close()
+				sc := bufio.NewScanner(c)
+				sc.Split(splitCRLF)
+				for sc.Scan() {
+					switch sc.Text() {
+					case "@SYS:MODELNAME=?":
+						// Unsolicited push FIRST, then (after a gap shorter
+						// than wakeDrainIdle) the real echo.
+						_, _ = io.WriteString(c, "@MAIN:VOL=-40.0\r\n")
+						time.Sleep(15 * time.Millisecond)
+						_, _ = io.WriteString(c, "@SYS:MODELNAME=RX-V583\r\n")
+					case "@MAIN:PWR=?":
+						_, _ = io.WriteString(c, "@MAIN:PWR=On\r\n")
+					}
+				}
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = l.Close(); wg.Wait() })
+
+	c, err := New(l.Addr().String(), WithWakeOnConnect())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	reply, err := c.Send(ctx, "@MAIN:PWR=?")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// With the old first-newline drain, this would return the stranded
+	// "@SYS:MODELNAME=RX-V583" (or the push) instead of the real reply.
+	if reply != "@MAIN:PWR=On" {
+		t.Errorf("reply = %q, want @MAIN:PWR=On (wake left a line stranded in the buffer)", reply)
 	}
 }
 
@@ -253,6 +322,72 @@ func TestGetStatus(t *testing.T) {
 		t.Errorf("SoundPrg = %q, want Standard", st.SoundPrg)
 	}
 	if st.Raw["PWR"] != "On" {
+		t.Errorf("Raw[PWR] = %q, want On", st.Raw["PWR"])
+	}
+}
+
+// TestGetStatus_UnsupportedSubunit: a BASIC GET on a subunit the device
+// lacks comes back as @UNDEFINED, which isn't a parseable report line — so
+// it's filtered and GetStatus returns an empty (zero-value) Status with no
+// error, rather than mis-decoding the control reply.
+func TestGetStatus_UnsupportedSubunit(t *testing.T) {
+	addr := newFakeYNCA(t, func(line string) string {
+		if line == "@SYS:VERSION=?" {
+			return "@SYS:VERSION=1.00/2.00"
+		}
+		// Including @ZONE3:BASIC=? — the device doesn't have ZONE3.
+		return "@UNDEFINED"
+	})
+	c, err := New(addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := c.GetStatus(ctx, "ZONE3")
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if st.Power != "" || st.Input != "" || st.SoundPrg != "" || st.Volume != 0 || len(st.Raw) != 0 {
+		t.Errorf("expected empty Status from @UNDEFINED, got %+v", st)
+	}
+}
+
+// TestGetStatus_FiltersOtherSubunit: a BASIC fan-out that interleaves a
+// line from a DIFFERENT subunit must not leak into the queried subunit's
+// Status. The @ZONE2:PWR=Standby line arrives AFTER @MAIN:PWR=On — if the
+// filter were missing it would overwrite Power to Standby.
+func TestGetStatus_FiltersOtherSubunit(t *testing.T) {
+	addr := newFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@MAIN:BASIC=?":
+			return "@MAIN:PWR=On\r\n@ZONE2:PWR=Standby\r\n@MAIN:INP=HDMI2"
+		case "@SYS:VERSION=?":
+			return "@SYS:VERSION=1.00/2.00"
+		}
+		return "@UNDEFINED"
+	})
+	c, err := New(addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := c.GetStatus(ctx, "MAIN")
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if st.Power != PowerOn {
+		t.Errorf("Power = %q, want On (ZONE2's Standby must not leak in)", st.Power)
+	}
+	if st.Input != "HDMI2" {
+		t.Errorf("Input = %q, want HDMI2", st.Input)
+	}
+	if _, ok := st.Raw["PWR"]; !ok || st.Raw["PWR"] != "On" {
 		t.Errorf("Raw[PWR] = %q, want On", st.Raw["PWR"])
 	}
 }

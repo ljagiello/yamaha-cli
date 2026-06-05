@@ -113,6 +113,60 @@ func TestZoneSwitch_Supported(t *testing.T) {
 	}
 }
 
+// TestZoneSwitch_LenientWhenFeaturesUnavailable: when getFeatures can't be
+// read (transport / sparse firmware), the gate must DEFER to the device
+// and still send the command, rather than fail-closed. Protects the
+// intentional lenient policy against a future "tighten the gate" change.
+func TestZoneSwitch_LenientWhenFeaturesUnavailable(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+	const deviceID = "00A0DEEE00DL"
+
+	var setHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/system/getFeatures"):
+			// Features fetch fails (response_code != 0) — the gate must
+			// NOT block on this.
+			_, _ = w.Write([]byte(`{"response_code":2}`))
+		case strings.HasSuffix(r.URL.Path, "/main/setPureDirect"):
+			atomic.AddInt32(&setHits, 1)
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	// DeviceID set in config so resolveDeviceID short-circuits (no
+	// getDeviceInfo round trip); only getFeatures is exercised, and it
+	// fails.
+	s := &state{
+		cfg:    &config.Config{Devices: map[string]config.Device{}},
+		alias:  "test",
+		device: config.Device{Host: srv.URL, DefaultZone: "main", DeviceID: deviceID},
+		zone:   "main",
+		client: c,
+	}
+	cmd := newZoneSwitchCmd(zoneSwitches[0]) // pure-direct
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, s)
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+
+	if err := cmd.RunE(cmd, []string{"on"}); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if atomic.LoadInt32(&setHits) != 1 {
+		t.Errorf("setPureDirect hits = %d, want 1 (lenient gate must still fire when features are unavailable)", setHits)
+	}
+}
+
 // TestZoneSwitch_Unsupported fails fast (exit 2) without a wire call when
 // the zone doesn't advertise the func.
 func TestZoneSwitch_Unsupported(t *testing.T) {
