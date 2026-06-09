@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	ssdp "github.com/koron/go-ssdp"
 )
 
 // sampleYamahaXML mirrors the shape of /tmp/yxc_desc_49154.xml with the
@@ -188,6 +190,68 @@ func TestLookupByUDN_NoMatch(t *testing.T) {
 	_, err := LookupByUDN(context.Background(), "uuid:nonexistent", 2*time.Second)
 	if err == nil {
 		t.Fatal("expected error for unknown UDN, got nil")
+	}
+}
+
+func TestDefaultSearchLocations_BindsConcreteIPv4Addrs(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	searchAddrsFn = func() ([]string, error) {
+		return []string{"192.168.1.100:0"}, nil
+	}
+	var gotAddr string
+	ssdpSearchFn = func(st string, waitSec int, localAddr string, opts ...ssdp.Option) ([]ssdp.Service, error) {
+		gotAddr = localAddr
+		if st != mediaRendererST {
+			t.Errorf("search type: got %q want %q", st, mediaRendererST)
+		}
+		if waitSec != 3 {
+			t.Errorf("waitSec: got %d want 3", waitSec)
+		}
+		return []ssdp.Service{{Location: "http://192.168.1.116:49154/MediaRenderer/desc.xml"}}, nil
+	}
+
+	locs, err := defaultSearchLocations(context.Background(), mediaRendererST, 3*time.Second)
+	if err != nil {
+		t.Fatalf("defaultSearchLocations: %v", err)
+	}
+	if gotAddr != "192.168.1.100:0" {
+		t.Fatalf("ssdp localAddr: got %q want concrete interface bind", gotAddr)
+	}
+	if len(locs) != 1 || locs[0] != "http://192.168.1.116:49154/MediaRenderer/desc.xml" {
+		t.Fatalf("locations: got %+v", locs)
+	}
+}
+
+func TestDefaultSearchLocations_DedupsAcrossBoundInterfaces(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	searchAddrsFn = func() ([]string, error) {
+		return []string{"192.168.1.100:0", "10.0.0.2:0"}, nil
+	}
+	ssdpSearchFn = func(_ string, _ int, _ string, _ ...ssdp.Option) ([]ssdp.Service, error) {
+		return []ssdp.Service{
+			{Location: "http://192.168.1.116:49154/MediaRenderer/desc.xml"},
+			{Location: "http://192.168.1.116:49154/MediaRenderer/desc.xml"},
+		}, nil
+	}
+
+	locs, err := defaultSearchLocations(context.Background(), mediaRendererST, 3*time.Second)
+	if err != nil {
+		t.Fatalf("defaultSearchLocations: %v", err)
+	}
+	if len(locs) != 1 {
+		t.Fatalf("expected deduped location, got %+v", locs)
 	}
 }
 

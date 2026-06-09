@@ -91,6 +91,8 @@ func LookupByUDN(ctx context.Context, udn string, timeout time.Duration) (Device
 //
 // Overridable via searchLocationsFn for tests.
 var searchLocationsFn = defaultSearchLocations
+var ssdpSearchFn = ssdp.Search
+var searchAddrsFn = searchAddrs
 
 func searchLocations(ctx context.Context, st string, timeout time.Duration) ([]string, error) {
 	return searchLocationsFn(ctx, st, timeout)
@@ -106,23 +108,95 @@ func defaultSearchLocations(ctx context.Context, st string, timeout time.Duratio
 	if waitSec < 1 {
 		waitSec = 1
 	}
-	services, err := ssdp.Search(st, waitSec, "")
+	addrs, err := searchAddrsFn()
 	if err != nil {
-		return nil, fmt.Errorf("ssdp search: %w", err)
+		return nil, err
 	}
-	seen := make(map[string]struct{}, len(services))
+
+	seen := make(map[string]struct{})
 	var locs []string
-	for _, s := range services {
-		if s.Location == "" {
-			continue
+	var firstErr error
+	type searchResult struct {
+		services []ssdp.Service
+		err      error
+	}
+	results := make(chan searchResult, len(addrs))
+	for _, addr := range addrs {
+		if err := ctx.Err(); err != nil {
+			return locs, err
 		}
-		if _, ok := seen[s.Location]; ok {
-			continue
+		go func(addr string) {
+			services, err := ssdpSearchFn(st, waitSec, addr)
+			results <- searchResult{services: services, err: err}
+		}(addr)
+	}
+	for range addrs {
+		select {
+		case <-ctx.Done():
+			return locs, ctx.Err()
+		case result := <-results:
+			if result.err != nil {
+				if firstErr == nil {
+					firstErr = result.err
+				}
+				continue
+			}
+			for _, s := range result.services {
+				if s.Location == "" {
+					continue
+				}
+				if _, ok := seen[s.Location]; ok {
+					continue
+				}
+				seen[s.Location] = struct{}{}
+				locs = append(locs, s.Location)
+			}
 		}
-		seen[s.Location] = struct{}{}
-		locs = append(locs, s.Location)
+	}
+	if len(locs) == 0 && firstErr != nil {
+		return nil, fmt.Errorf("ssdp search: %w", firstErr)
 	}
 	return locs, nil
+}
+
+func searchAddrs() ([]string, error) {
+	ifis, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list network interfaces: %w", err)
+	}
+	var out []string
+	for _, ifi := range ifis {
+		if ifi.Flags&net.FlagUp == 0 ||
+			ifi.Flags&net.FlagMulticast == 0 ||
+			ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip := ipv4FromAddr(addr)
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			out = append(out, net.JoinHostPort(ip.String(), "0"))
+		}
+	}
+	if len(out) == 0 {
+		return []string{""}, nil
+	}
+	return out, nil
+}
+
+func ipv4FromAddr(addr net.Addr) net.IP {
+	switch a := addr.(type) {
+	case *net.IPNet:
+		return a.IP.To4()
+	case *net.IPAddr:
+		return a.IP.To4()
+	}
+	return nil
 }
 
 // fetchAndFilter performs the per-Location description fetch + parse +
