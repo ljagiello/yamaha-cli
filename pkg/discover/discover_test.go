@@ -2,11 +2,18 @@ package discover
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	ssdp "github.com/koron/go-ssdp"
 )
 
 // sampleYamahaXML mirrors the shape of /tmp/yxc_desc_49154.xml with the
@@ -188,6 +195,278 @@ func TestLookupByUDN_NoMatch(t *testing.T) {
 	_, err := LookupByUDN(context.Background(), "uuid:nonexistent", 2*time.Second)
 	if err == nil {
 		t.Fatal("expected error for unknown UDN, got nil")
+	}
+}
+
+func TestDefaultSearchLocations_BindsConcreteIPv4Addrs(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	searchAddrsFn = func() ([]string, error) {
+		return []string{"192.168.1.100:0"}, nil
+	}
+	// The fan-out calls ssdpSearchFn from a goroutine, so guard the
+	// recording even though this case binds a single interface.
+	var mu sync.Mutex
+	var gotAddrs []string
+	ssdpSearchFn = func(st string, waitSec int, localAddr string, opts ...ssdp.Option) ([]ssdp.Service, error) {
+		mu.Lock()
+		gotAddrs = append(gotAddrs, localAddr)
+		mu.Unlock()
+		if st != mediaRendererST {
+			t.Errorf("search type: got %q want %q", st, mediaRendererST)
+		}
+		if waitSec != 3 {
+			t.Errorf("waitSec: got %d want 3", waitSec)
+		}
+		return []ssdp.Service{{Location: "http://192.168.1.116:49154/MediaRenderer/desc.xml"}}, nil
+	}
+
+	locs, err := defaultSearchLocations(context.Background(), mediaRendererST, 3*time.Second)
+	if err != nil {
+		t.Fatalf("defaultSearchLocations: %v", err)
+	}
+	if !reflect.DeepEqual(gotAddrs, []string{"192.168.1.100:0"}) {
+		t.Fatalf("ssdp localAddr: got %v want concrete interface bind", gotAddrs)
+	}
+	if len(locs) != 1 || locs[0] != "http://192.168.1.116:49154/MediaRenderer/desc.xml" {
+		t.Fatalf("locations: got %+v", locs)
+	}
+}
+
+func TestDefaultSearchLocations_DedupsAcrossBoundInterfaces(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	const (
+		locA = "http://192.168.1.116:49154/MediaRenderer/desc.xml"
+		locB = "http://10.0.0.5:49154/MediaRenderer/desc.xml"
+	)
+	searchAddrsFn = func() ([]string, error) {
+		return []string{"192.168.1.100:0", "10.0.0.2:0"}, nil
+	}
+	// Each interface reports a distinct device, and the second also re-sees
+	// locA. That duplicate spans two interfaces, so it exercises the
+	// cross-interface dedup — not just per-reply dedup — and the recording
+	// proves every interface was actually scanned.
+	var mu sync.Mutex
+	var scanned []string
+	ssdpSearchFn = func(_ string, _ int, localAddr string, _ ...ssdp.Option) ([]ssdp.Service, error) {
+		mu.Lock()
+		scanned = append(scanned, localAddr)
+		mu.Unlock()
+		switch localAddr {
+		case "192.168.1.100:0":
+			return []ssdp.Service{{Location: locA}, {Location: locA}}, nil
+		case "10.0.0.2:0":
+			return []ssdp.Service{{Location: locB}, {Location: locA}}, nil
+		default:
+			t.Errorf("unexpected localAddr %q", localAddr)
+			return nil, nil
+		}
+	}
+
+	locs, err := defaultSearchLocations(context.Background(), mediaRendererST, 3*time.Second)
+	if err != nil {
+		t.Fatalf("defaultSearchLocations: %v", err)
+	}
+	sort.Strings(scanned)
+	if !reflect.DeepEqual(scanned, []string{"10.0.0.2:0", "192.168.1.100:0"}) {
+		t.Fatalf("expected both interfaces scanned, got %v", scanned)
+	}
+	// defaultSearchLocations sorts its result; locB sorts before locA.
+	if !reflect.DeepEqual(locs, []string{locB, locA}) {
+		t.Fatalf("expected deduped union [%q %q], got %+v", locB, locA, locs)
+	}
+}
+
+func TestDefaultSearchLocations_AggregatesErrorWhenAllInterfacesFail(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	searchAddrsFn = func() ([]string, error) {
+		return []string{"192.168.1.100:0", "10.0.0.2:0"}, nil
+	}
+	wantErr := errors.New("boom")
+	ssdpSearchFn = func(_ string, _ int, _ string, _ ...ssdp.Option) ([]ssdp.Service, error) {
+		return nil, wantErr
+	}
+
+	locs, err := defaultSearchLocations(context.Background(), mediaRendererST, 3*time.Second)
+	if err == nil {
+		t.Fatalf("expected error when all interfaces fail, got locs=%+v", locs)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error should wrap the ssdp failure: got %v", err)
+	}
+	if !strings.Contains(err.Error(), "ssdp search") {
+		t.Fatalf("error should carry the ssdp search prefix: got %v", err)
+	}
+}
+
+func TestDefaultSearchLocations_ReturnsLocationWhenSomeInterfacesError(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	const loc = "http://192.168.1.116:49154/MediaRenderer/desc.xml"
+	searchAddrsFn = func() ([]string, error) {
+		return []string{"192.168.1.100:0", "10.0.0.2:0"}, nil
+	}
+	ssdpSearchFn = func(_ string, _ int, localAddr string, _ ...ssdp.Option) ([]ssdp.Service, error) {
+		if localAddr == "10.0.0.2:0" {
+			return nil, errors.New("interface down")
+		}
+		return []ssdp.Service{{Location: loc}}, nil
+	}
+
+	locs, err := defaultSearchLocations(context.Background(), mediaRendererST, 3*time.Second)
+	if err != nil {
+		t.Fatalf("a partial failure must not error when another interface succeeds: %v", err)
+	}
+	if len(locs) != 1 || locs[0] != loc {
+		t.Fatalf("expected the surviving interface's location, got %+v", locs)
+	}
+}
+
+func TestDefaultSearchLocations_HonorsCancelledContext(t *testing.T) {
+	prevSearch := ssdpSearchFn
+	prevAddrs := searchAddrsFn
+	t.Cleanup(func() {
+		ssdpSearchFn = prevSearch
+		searchAddrsFn = prevAddrs
+	})
+
+	searchAddrsFn = func() ([]string, error) {
+		t.Error("searchAddrsFn must not be called once the context is cancelled")
+		return nil, nil
+	}
+	ssdpSearchFn = func(_ string, _ int, _ string, _ ...ssdp.Option) ([]ssdp.Service, error) {
+		t.Error("ssdpSearchFn must not be called once the context is cancelled")
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := defaultSearchLocations(ctx, mediaRendererST, 3*time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+// ipNetAddr builds the *net.IPNet that (*net.Interface).Addrs reports for a
+// concrete interface address, so the searchAddrs filter can be exercised
+// without touching the host's real network configuration.
+func ipNetAddr(ip string) *net.IPNet {
+	return &net.IPNet{IP: net.ParseIP(ip), Mask: net.CIDRMask(24, 32)}
+}
+
+// fakeAddr is a net.Addr whose concrete type ipv4FromAddr does not handle,
+// covering the default (return nil) branch.
+type fakeAddr struct{ s string }
+
+func (f fakeAddr) Network() string { return "fake" }
+func (f fakeAddr) String() string  { return f.s }
+
+func TestSearchAddrs_FiltersToConcreteMulticastIPv4(t *testing.T) {
+	prev := interfaceAddrsFn
+	t.Cleanup(func() { interfaceAddrsFn = prev })
+
+	up := net.FlagUp | net.FlagMulticast
+	interfaceAddrsFn = func() ([]ifaceAddrs, error) {
+		return []ifaceAddrs{
+			{flags: up | net.FlagLoopback, addrs: []net.Addr{ipNetAddr("127.0.0.1")}}, // loopback iface: skip
+			{flags: net.FlagMulticast, addrs: []net.Addr{ipNetAddr("192.168.0.9")}},   // down: skip
+			{flags: net.FlagUp, addrs: []net.Addr{ipNetAddr("192.168.0.10")}},         // no multicast: skip
+			{flags: up, addrs: []net.Addr{
+				ipNetAddr("192.168.1.100"), // kept
+				ipNetAddr("fe80::1"),       // IPv6: skip
+				ipNetAddr("127.0.0.1"),     // loopback IP: skip
+			}},
+			{flags: up, addrs: []net.Addr{ipNetAddr("10.0.0.2")}}, // kept
+		}, nil
+	}
+
+	got, err := searchAddrs()
+	if err != nil {
+		t.Fatalf("searchAddrs: %v", err)
+	}
+	want := []string{"192.168.1.100:0", "10.0.0.2:0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bind addrs: got %v want %v", got, want)
+	}
+}
+
+func TestSearchAddrs_FallsBackToWildcardWhenNoneQualify(t *testing.T) {
+	prev := interfaceAddrsFn
+	t.Cleanup(func() { interfaceAddrsFn = prev })
+
+	interfaceAddrsFn = func() ([]ifaceAddrs, error) {
+		return []ifaceAddrs{
+			{flags: net.FlagUp | net.FlagMulticast | net.FlagLoopback, addrs: []net.Addr{ipNetAddr("127.0.0.1")}},
+		}, nil
+	}
+
+	got, err := searchAddrs()
+	if err != nil {
+		t.Fatalf("searchAddrs: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{""}) {
+		t.Fatalf("expected wildcard fallback [\"\"], got %v", got)
+	}
+}
+
+func TestSearchAddrs_WrapsInterfaceListError(t *testing.T) {
+	prev := interfaceAddrsFn
+	t.Cleanup(func() { interfaceAddrsFn = prev })
+
+	interfaceAddrsFn = func() ([]ifaceAddrs, error) {
+		return nil, errors.New("no interfaces")
+	}
+
+	if _, err := searchAddrs(); err == nil || !strings.Contains(err.Error(), "list network interfaces") {
+		t.Fatalf("expected wrapped interface-list error, got %v", err)
+	}
+}
+
+func TestIPv4FromAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		addr net.Addr
+		want string // "" means a nil result
+	}{
+		{"IPNet IPv4", ipNetAddr("192.168.1.5"), "192.168.1.5"},
+		{"IPNet IPv6 only", ipNetAddr("fe80::1"), ""},
+		{"IPAddr IPv4", &net.IPAddr{IP: net.ParseIP("10.0.0.7")}, "10.0.0.7"},
+		{"unhandled net.Addr type", fakeAddr{s: "whatever"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ip := ipv4FromAddr(tt.addr)
+			if tt.want == "" {
+				if ip != nil {
+					t.Fatalf("got %v want nil", ip)
+				}
+				return
+			}
+			if ip == nil || ip.String() != tt.want {
+				t.Fatalf("got %v want %s", ip, tt.want)
+			}
+		})
 	}
 }
 

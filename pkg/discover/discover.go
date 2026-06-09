@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	ssdp "github.com/koron/go-ssdp"
@@ -91,6 +92,8 @@ func LookupByUDN(ctx context.Context, udn string, timeout time.Duration) (Device
 //
 // Overridable via searchLocationsFn for tests.
 var searchLocationsFn = defaultSearchLocations
+var ssdpSearchFn = ssdp.Search
+var searchAddrsFn = searchAddrs
 
 func searchLocations(ctx context.Context, st string, timeout time.Duration) ([]string, error) {
 	return searchLocationsFn(ctx, st, timeout)
@@ -106,23 +109,132 @@ func defaultSearchLocations(ctx context.Context, st string, timeout time.Duratio
 	if waitSec < 1 {
 		waitSec = 1
 	}
-	services, err := ssdp.Search(st, waitSec, "")
+	addrs, err := searchAddrsFn()
 	if err != nil {
-		return nil, fmt.Errorf("ssdp search: %w", err)
+		return nil, err
 	}
-	seen := make(map[string]struct{}, len(services))
+
+	seen := make(map[string]struct{})
 	var locs []string
-	for _, s := range services {
-		if s.Location == "" {
-			continue
-		}
-		if _, ok := seen[s.Location]; ok {
-			continue
-		}
-		seen[s.Location] = struct{}{}
-		locs = append(locs, s.Location)
+	var firstErr error
+	type searchResult struct {
+		services []ssdp.Service
+		err      error
 	}
+	// The channel is buffered to the goroutine count so every send
+	// succeeds without a receiver. ssdp.Search takes no context and blocks
+	// for the full waitSec, so on ctx cancellation we return early while
+	// these goroutines keep running; the buffer slack lets each one finish
+	// its send and exit cleanly rather than leaking.
+	results := make(chan searchResult, len(addrs))
+	for _, addr := range addrs {
+		if err := ctx.Err(); err != nil {
+			return locs, err
+		}
+		go func(addr string) {
+			services, err := ssdpSearchFn(st, waitSec, addr)
+			results <- searchResult{services: services, err: err}
+		}(addr)
+	}
+	for range addrs {
+		select {
+		case <-ctx.Done():
+			return locs, ctx.Err()
+		case result := <-results:
+			if result.err != nil {
+				if firstErr == nil {
+					firstErr = result.err
+				}
+				continue
+			}
+			for _, s := range result.services {
+				if s.Location == "" {
+					continue
+				}
+				if _, ok := seen[s.Location]; ok {
+					continue
+				}
+				seen[s.Location] = struct{}{}
+				locs = append(locs, s.Location)
+			}
+		}
+	}
+	if len(locs) == 0 && firstErr != nil {
+		return nil, fmt.Errorf("ssdp search: %w", firstErr)
+	}
+	// Sort so the result order is stable across runs: locations arrive in
+	// non-deterministic goroutine-completion order, and the interactive
+	// `--add` picker numbers devices by this order.
+	sort.Strings(locs)
 	return locs, nil
+}
+
+// ifaceAddrs is the subset of a network interface that searchAddrs needs:
+// its flags and its addresses. Pulling net.Interfaces and (*Interface).Addrs
+// behind the interfaceAddrsFn seam lets the interface-filtering logic be
+// tested without depending on the host's real network configuration.
+type ifaceAddrs struct {
+	flags net.Flags
+	addrs []net.Addr
+}
+
+var interfaceAddrsFn = systemInterfaceAddrs
+
+func systemInterfaceAddrs() ([]ifaceAddrs, error) {
+	ifis, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ifaceAddrs, 0, len(ifis))
+	for _, ifi := range ifis {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			// An interface whose addresses can't be read is unusable for
+			// binding; skip it rather than failing the whole scan.
+			continue
+		}
+		out = append(out, ifaceAddrs{flags: ifi.Flags, addrs: addrs})
+	}
+	return out, nil
+}
+
+func searchAddrs() ([]string, error) {
+	ifis, err := interfaceAddrsFn()
+	if err != nil {
+		return nil, fmt.Errorf("list network interfaces: %w", err)
+	}
+	var out []string
+	for _, ifi := range ifis {
+		if ifi.flags&net.FlagUp == 0 ||
+			ifi.flags&net.FlagMulticast == 0 ||
+			ifi.flags&net.FlagLoopback != 0 {
+			continue
+		}
+		for _, addr := range ifi.addrs {
+			ip := ipv4FromAddr(addr)
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			out = append(out, net.JoinHostPort(ip.String(), "0"))
+		}
+	}
+	// Fall back to the wildcard bind ("") when no concrete multicast
+	// interface qualifies, so discovery still attempts a default-route scan
+	// instead of silently returning zero addresses.
+	if len(out) == 0 {
+		return []string{""}, nil
+	}
+	return out, nil
+}
+
+func ipv4FromAddr(addr net.Addr) net.IP {
+	switch a := addr.(type) {
+	case *net.IPNet:
+		return a.IP.To4()
+	case *net.IPAddr:
+		return a.IP.To4()
+	}
+	return nil
 }
 
 // fetchAndFilter performs the per-Location description fetch + parse +
