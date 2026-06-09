@@ -153,6 +153,56 @@ func TestBuildInputListPayloadIncludesCurrentAndMetadata(t *testing.T) {
 	}
 }
 
+// TestInputType pins every return path. The service cases mirror the
+// RX-V583 fixture (testdata/getFeatures.json): spotify is netusb with
+// account_enable=false, so classification must come from play_info_type,
+// not account-ness.
+func TestInputType(t *testing.T) {
+	cases := []struct {
+		name         string
+		playInfoType string
+		want         string
+	}{
+		{"airplay", "netusb", "airplay"},
+		{"mc_link", "netusb", "link"},
+		{"server", "netusb", "server"},
+		{"net_radio", "netusb", "radio"},
+		{"bluetooth", "netusb", "bluetooth"},
+		{"usb", "netusb", "usb"},
+		{"spotify", "netusb", "service"},
+		{"pandora", "netusb", "service"},
+		{"amazon_music", "netusb", "service"},
+		{"tuner", "tuner", "tuner"},
+		{"hdmi1", "none", "hdmi"},
+		{"av2", "none", "av"},
+		{"audio3", "none", "audio"},
+		{"aux", "none", "aux"},
+		{"phono", "none", "physical"},
+		{"ghost", "", ""},
+		{"cd", "cd", "cd"},
+	}
+	for _, tc := range cases {
+		if got := inputType(tc.name, tc.playInfoType); got != tc.want {
+			t.Errorf("inputType(%q, %q) = %q, want %q", tc.name, tc.playInfoType, got, tc.want)
+		}
+	}
+}
+
+// TestBuildInputListPayloadUnknownInput covers an input the zone lists
+// but System.InputList doesn't describe (stale firmware metadata): the
+// row renders with empty type and notes rather than panicking or
+// inventing values.
+func TestBuildInputListPayloadUnknownInput(t *testing.T) {
+	feats := inputListFeatures()
+	feats.Zone[0].InputList = append(feats.Zone[0].InputList, "ghost")
+
+	rows := buildInputListPayload(feats, "main", "")
+	last := rows[len(rows)-1]
+	if last["input"] != "ghost" || last["type"] != "" || last["notes"] != "" {
+		t.Errorf("unknown input row = %#v", last)
+	}
+}
+
 func TestRunInputNoArgShowsCurrentAndMetadata(t *testing.T) {
 	resetFeatureLoader(t)
 	redirectCacheDir(t)

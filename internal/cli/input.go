@@ -111,7 +111,7 @@ func buildInputListPayload(feats *yxc.Features, zone, current string) []map[stri
 		rows = append(rows, map[string]any{
 			"current": selectedMarker(name == current),
 			"input":   name,
-			"type":    inputType(name, item),
+			"type":    inputType(name, item.PlayInfoType),
 			"notes":   strings.Join(inputNotes(ok, item), ", "),
 		})
 	}
@@ -136,7 +136,7 @@ func selectedMarker(selected bool) string {
 	return ""
 }
 
-func inputType(name string, item yxc.InputItem) string {
+func inputType(name, playInfoType string) string {
 	switch name {
 	case "airplay":
 		return "airplay"
@@ -152,17 +152,15 @@ func inputType(name string, item yxc.InputItem) string {
 		return "usb"
 	}
 
-	// The receiver flags account-backed streaming services itself via
-	// account_enable, so whatever services the device actually offers
-	// (pandora, qobuz, amazon_music, ...) classify without a name
-	// allowlist that would go stale.
-	if item.AccountEnable {
-		return "service"
-	}
-
-	switch item.PlayInfoType {
+	switch playInfoType {
+	// After the name overrides above, every remaining netusb input the
+	// device advertises is a streaming service (spotify, pandora, qobuz,
+	// amazon_music, ...). Account-ness is deliberately not the signal:
+	// spotify reports account_enable=false on real devices (Spotify
+	// Connect authenticates in the app), and setup needs already surface
+	// via the notes column.
 	case "netusb":
-		return "media"
+		return "service"
 	case "tuner":
 		return "tuner"
 	case "none":
@@ -181,7 +179,7 @@ func inputType(name string, item yxc.InputItem) string {
 	case "":
 		return ""
 	default:
-		return item.PlayInfoType
+		return playInfoType
 	}
 }
 
