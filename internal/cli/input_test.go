@@ -108,12 +108,20 @@ func inputListFeatures() *yxc.Features {
 					RenameEnable:       true,
 					PlayInfoType:       "none",
 				},
+				// Mirrors the RX-V583 fixture: spotify is netusb with
+				// account_enable=false (Spotify Connect auths in-app), so
+				// it must classify as service without account-ness.
+				{
+					ID:                 "spotify",
+					DistributionEnable: true,
+					PlayInfoType:       "netusb",
+				},
 			},
 		},
 		Zone: []yxc.ZoneFeatures{{
 			ID:        "main",
 			FuncList:  []string{"power", "volume", "prepare_input_change"},
-			InputList: []string{"pandora", "hdmi2"},
+			InputList: []string{"pandora", "hdmi2", "spotify"},
 		}},
 	}
 }
@@ -135,8 +143,8 @@ func writeCachedFeatures(t *testing.T, path string, feats *yxc.Features) {
 
 func TestBuildInputListPayloadIncludesCurrentAndMetadata(t *testing.T) {
 	rows := buildInputListPayload(inputListFeatures(), "main", "hdmi2")
-	if len(rows) != 2 {
-		t.Fatalf("rows: got %d, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("rows: got %d, want 3", len(rows))
 	}
 
 	if rows[0]["current"] != "" || rows[0]["input"] != "pandora" {
@@ -150,6 +158,11 @@ func TestBuildInputListPayloadIncludesCurrentAndMetadata(t *testing.T) {
 	}
 	if rows[1]["type"] != "hdmi" || rows[1]["notes"] != "link, rename" {
 		t.Errorf("hdmi2 metadata row = %#v", rows[1])
+	}
+	// spotify pins the round-1 regression at the payload layer: it must
+	// classify as service despite account_enable=false.
+	if rows[2]["input"] != "spotify" || rows[2]["type"] != "service" || rows[2]["notes"] != "link" {
+		t.Errorf("spotify metadata row = %#v", rows[2])
 	}
 }
 

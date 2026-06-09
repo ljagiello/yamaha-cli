@@ -179,8 +179,9 @@ func renderTable(w io.Writer, v any, isTTY bool) error {
 }
 
 // isSingleColumnRows reports whether every row has the same lone field.
-// That shape is used by list-style commands such as `input`, `sound`, and
-// `decoder`; rendering it as repeated key/value blocks is needlessly noisy.
+// That shape is used by list-style commands such as `ynca input`, `sound`,
+// and `decoder`; rendering it as repeated key/value blocks is needlessly
+// noisy.
 func isSingleColumnRows(rows []map[string]any) bool {
 	if len(rows) == 0 || len(rows[0]) != 1 {
 		return false
