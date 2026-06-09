@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 
 	ssdp "github.com/koron/go-ssdp"
@@ -120,6 +121,11 @@ func defaultSearchLocations(ctx context.Context, st string, timeout time.Duratio
 		services []ssdp.Service
 		err      error
 	}
+	// The channel is buffered to the goroutine count so every send
+	// succeeds without a receiver. ssdp.Search takes no context and blocks
+	// for the full waitSec, so on ctx cancellation we return early while
+	// these goroutines keep running; the buffer slack lets each one finish
+	// its send and exit cleanly rather than leaking.
 	results := make(chan searchResult, len(addrs))
 	for _, addr := range addrs {
 		if err := ctx.Err(); err != nil {
@@ -156,26 +162,55 @@ func defaultSearchLocations(ctx context.Context, st string, timeout time.Duratio
 	if len(locs) == 0 && firstErr != nil {
 		return nil, fmt.Errorf("ssdp search: %w", firstErr)
 	}
+	// Sort so the result order is stable across runs: locations arrive in
+	// non-deterministic goroutine-completion order, and the interactive
+	// `--add` picker numbers devices by this order.
+	sort.Strings(locs)
 	return locs, nil
 }
 
-func searchAddrs() ([]string, error) {
+// ifaceAddrs is the subset of a network interface that searchAddrs needs:
+// its flags and its addresses. Pulling net.Interfaces and (*Interface).Addrs
+// behind the interfaceAddrsFn seam lets the interface-filtering logic be
+// tested without depending on the host's real network configuration.
+type ifaceAddrs struct {
+	flags net.Flags
+	addrs []net.Addr
+}
+
+var interfaceAddrsFn = systemInterfaceAddrs
+
+func systemInterfaceAddrs() ([]ifaceAddrs, error) {
 	ifis, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ifaceAddrs, 0, len(ifis))
+	for _, ifi := range ifis {
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			// An interface whose addresses can't be read is unusable for
+			// binding; skip it rather than failing the whole scan.
+			continue
+		}
+		out = append(out, ifaceAddrs{flags: ifi.Flags, addrs: addrs})
+	}
+	return out, nil
+}
+
+func searchAddrs() ([]string, error) {
+	ifis, err := interfaceAddrsFn()
 	if err != nil {
 		return nil, fmt.Errorf("list network interfaces: %w", err)
 	}
 	var out []string
 	for _, ifi := range ifis {
-		if ifi.Flags&net.FlagUp == 0 ||
-			ifi.Flags&net.FlagMulticast == 0 ||
-			ifi.Flags&net.FlagLoopback != 0 {
+		if ifi.flags&net.FlagUp == 0 ||
+			ifi.flags&net.FlagMulticast == 0 ||
+			ifi.flags&net.FlagLoopback != 0 {
 			continue
 		}
-		addrs, err := ifi.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
+		for _, addr := range ifi.addrs {
 			ip := ipv4FromAddr(addr)
 			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
 				continue
@@ -183,6 +218,9 @@ func searchAddrs() ([]string, error) {
 			out = append(out, net.JoinHostPort(ip.String(), "0"))
 		}
 	}
+	// Fall back to the wildcard bind ("") when no concrete multicast
+	// interface qualifies, so discovery still attempts a default-route scan
+	// instead of silently returning zero addresses.
 	if len(out) == 0 {
 		return []string{""}, nil
 	}
