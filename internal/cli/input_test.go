@@ -216,6 +216,73 @@ func TestRunInputNoArgShowsCurrentAndMetadata(t *testing.T) {
 	}
 }
 
+// TestRunInputNoArgDegradesWhenStatusFails pins the contract that the
+// no-arg list is cache-backed: a getStatus failure (receiver off, network
+// down) must not fail the command — it renders the list with an empty
+// current column and a stderr warning.
+func TestRunInputNoArgDegradesWhenStatusFails(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEC60002"
+	cachePath := resolvedCachePath(t, deviceID)
+	writeCachedFeatures(t, cachePath, inputListFeatures())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/main/getStatus"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:   &config.Config{Devices: map[string]config.Device{}},
+		alias: "test",
+		device: config.Device{
+			Host:        srv.URL,
+			DeviceID:    deviceID,
+			DefaultZone: "main",
+		},
+		zone:   "main",
+		client: c,
+	}
+
+	cmd := newInputCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, s)
+	out := &strings.Builder{}
+	errOut := &strings.Builder{}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.Flags().String("output", "table", "")
+	cmd.SetArgs(nil)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute should degrade, not fail: %v", err)
+	}
+
+	body := out.String()
+	for _, want := range []string{"pandora", "hdmi2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("output missing %q; got:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "*") {
+		t.Errorf("no current marker expected when getStatus fails, got:\n%s", body)
+	}
+	if !strings.Contains(errOut.String(), "warning: current input unknown") {
+		t.Errorf("stderr missing degradation warning, got:\n%s", errOut.String())
+	}
+}
+
 // TestValidateInput_StaleCacheRefresh asserts the the README acceptance
 // criterion: when the cached features omit an input the user names, the
 // CLI auto-refreshes (one extra getFeatures), validates, and persists the

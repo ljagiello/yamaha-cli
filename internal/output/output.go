@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -223,13 +224,16 @@ func writeSingleColumnRows(w io.Writer, rows []map[string]any, useColor bool) er
 
 func writeRowsTable(w io.Writer, rows []map[string]any, useColor bool) error {
 	columns := rowColumns(rows)
+	// Widths count runes, not bytes — device-supplied cells (net-radio
+	// station names, renamed inputs) are often non-ASCII. Full display
+	// width (wcwidth) handling is overkill for this CLI.
 	widths := make(map[string]int, len(columns))
 	for _, col := range columns {
-		widths[col] = len(col)
+		widths[col] = utf8.RuneCountInString(col)
 	}
 	for _, row := range rows {
 		for _, col := range columns {
-			if n := len(formatCell(row[col])); n > widths[col] {
+			if n := utf8.RuneCountInString(formatCell(row[col])); n > widths[col] {
 				widths[col] = n
 			}
 		}
@@ -249,7 +253,7 @@ func writeRowsTable(w io.Writer, rows []map[string]any, useColor bool) error {
 			return err
 		}
 		if i < len(columns)-1 {
-			if _, err := fmt.Fprint(w, strings.Repeat(" ", widths[col]-len(col))); err != nil {
+			if _, err := fmt.Fprint(w, strings.Repeat(" ", widths[col]-utf8.RuneCountInString(col))); err != nil {
 				return err
 			}
 		}
@@ -271,7 +275,7 @@ func writeRowsTable(w io.Writer, rows []map[string]any, useColor bool) error {
 				return err
 			}
 			if i < last {
-				if _, err := fmt.Fprint(w, strings.Repeat(" ", widths[col]-len(cell))); err != nil {
+				if _, err := fmt.Fprint(w, strings.Repeat(" ", widths[col]-utf8.RuneCountInString(cell))); err != nil {
 					return err
 				}
 			}
@@ -300,12 +304,14 @@ func rowColumns(rows []map[string]any) []string {
 		}
 	}
 
+	// preferred mirrors the columns emitted by the CLI's row-list payload
+	// builders (input, preset list, tuner presets, discover, features,
+	// ynca scene) in display order. Keep it in sync when a builder adds a
+	// column; keys not listed here render after these, sorted.
 	preferred := []string{
-		"now", "selected", "current", "num", "number", "input", "type",
-		"notes", "capabilities", "name", "host", "model", "zone", "scope",
-		"function", "access", "description", "text", "band", "freq",
-		"freq_human", "play_info", "play_info_type", "account_setup",
-		"linkable", "renameable", "udn",
+		"current", "num", "input", "type", "notes", "name", "host",
+		"model", "scope", "function", "access", "description", "text",
+		"band", "freq", "freq_human", "udn",
 	}
 	columns := make([]string, 0, len(seen))
 	for _, k := range preferred {

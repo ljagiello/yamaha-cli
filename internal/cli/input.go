@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -33,19 +34,25 @@ func newInputCmd() *cobra.Command {
 					return err
 				}
 
-				var status *yxc.Status
+				// The current-input marker is garnish on the cache-backed
+				// list: if getStatus fails (receiver off, network down),
+				// render the list anyway with an empty current column.
+				current := ""
 				err = runWithRediscover(ctx, s, func(c *yxc.Client) error {
 					st, e := c.GetStatus(ctx, s.zone)
 					if e != nil {
 						return e
 					}
-					status = st
+					current = st.Input
 					return nil
 				})
 				if err != nil {
-					return err
+					if ctx.Err() != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: current input unknown: %v\n", err)
 				}
-				return printResult(cmd, buildInputListPayload(feats, s.zone, status.Input))
+				return printResult(cmd, buildInputListPayload(feats, s.zone, current))
 			}
 			name := strings.TrimSpace(args[0])
 
@@ -104,7 +111,7 @@ func buildInputListPayload(feats *yxc.Features, zone, current string) []map[stri
 		rows = append(rows, map[string]any{
 			"current": selectedMarker(name == current),
 			"input":   name,
-			"type":    inputType(name, item.PlayInfoType),
+			"type":    inputType(name, item),
 			"notes":   strings.Join(inputNotes(ok, item), ", "),
 		})
 	}
@@ -129,10 +136,8 @@ func selectedMarker(selected bool) string {
 	return ""
 }
 
-func inputType(name, playInfoType string) string {
+func inputType(name string, item yxc.InputItem) string {
 	switch name {
-	case "pandora", "spotify", "tidal", "deezer":
-		return "service"
 	case "airplay":
 		return "airplay"
 	case "mc_link":
@@ -147,7 +152,15 @@ func inputType(name, playInfoType string) string {
 		return "usb"
 	}
 
-	switch playInfoType {
+	// The receiver flags account-backed streaming services itself via
+	// account_enable, so whatever services the device actually offers
+	// (pandora, qobuz, amazon_music, ...) classify without a name
+	// allowlist that would go stale.
+	if item.AccountEnable {
+		return "service"
+	}
+
+	switch item.PlayInfoType {
 	case "netusb":
 		return "media"
 	case "tuner":
@@ -168,7 +181,7 @@ func inputType(name, playInfoType string) string {
 	case "":
 		return ""
 	default:
-		return playInfoType
+		return item.PlayInfoType
 	}
 }
 

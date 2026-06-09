@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func sampleStatus() map[string]any {
@@ -296,6 +297,32 @@ func TestRenderRowsTableDoesNotPadEmptyTrailingCells(t *testing.T) {
 	}
 	if !strings.Contains(out, "airplay  airplay\n") {
 		t.Errorf("row should stop after last non-empty cell, got:\n%q", out)
+	}
+}
+
+func TestRenderRowsTablePadsNonASCIICellsByRunes(t *testing.T) {
+	// Net-radio station names are routinely non-ASCII. Byte-based padding
+	// would over-pad the ASCII row and misalign the trailing column.
+	v := []map[string]any{
+		{"num": 1, "text": "Радио Україна", "band": "fm"},
+		{"num": 2, "text": "BBC", "band": "fm"},
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, v, FormatTable, false); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("lines: got %d, want 3:\n%s", len(lines), buf.String())
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasSuffix(line, "  fm") {
+			t.Errorf("row should end with the band cell, got %q", line)
+		}
+	}
+	if w1, w2 := utf8.RuneCountInString(lines[1]), utf8.RuneCountInString(lines[2]); w1 != w2 {
+		t.Errorf("band column misaligned: row widths %d vs %d in runes:\n%s", w1, w2, buf.String())
 	}
 }
 
