@@ -207,6 +207,96 @@ func TestRenderSliceOfMaps(t *testing.T) {
 	if !strings.Contains(out, "living-room") || !strings.Contains(out, "bedroom") {
 		t.Errorf("slice render missing rows, got:\n%s", out)
 	}
+	if strings.Contains(out, "\n\n") {
+		t.Errorf("multi-column rows should render as a compact table, got:\n%s", out)
+	}
+	if !strings.HasPrefix(out, "name") || !strings.Contains(out, "host") {
+		t.Errorf("multi-column rows should include a header, got:\n%s", out)
+	}
+}
+
+func TestRenderSingleColumnRows(t *testing.T) {
+	v := []map[string]any{
+		{"input": "pandora"},
+		{"input": "spotify"},
+		{"input": "hdmi1"},
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, v, FormatTable, false); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	want := "input\n  pandora\n  spotify\n  hdmi1\n"
+	if buf.String() != want {
+		t.Errorf("single-column rows:\ngot:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+func TestRenderSingleColumnRowsTTYUsesColorOnHeading(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	SetNoColor(false)
+	defer SetNoColor(false)
+
+	v := []map[string]any{
+		{"input": "pandora"},
+		{"input": "spotify"},
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, v, FormatTable, true); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(out, "\x1b[2minput\x1b[0m\n  pandora\n") {
+		t.Errorf("single-column TTY output should dim heading only, got:\n%s", out)
+	}
+}
+
+func TestRenderRowsTableOrdersUsefulColumns(t *testing.T) {
+	v := []map[string]any{
+		{
+			"input":   "pandora",
+			"current": "",
+			"type":    "service",
+			"notes":   "account setup, link",
+		},
+		{
+			"input":   "hdmi2",
+			"current": "*",
+			"type":    "hdmi",
+			"notes":   "link, rename",
+		},
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, v, FormatTable, false); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(out, "current  input") {
+		t.Errorf("expected current/input leading columns, got:\n%s", out)
+	}
+	if !strings.Contains(out, "*        hdmi2") {
+		t.Errorf("current marker should align with the current input row, got:\n%s", out)
+	}
+}
+
+func TestRenderRowsTableDoesNotPadEmptyTrailingCells(t *testing.T) {
+	v := []map[string]any{
+		{"input": "airplay", "type": "airplay", "notes": ""},
+	}
+	var buf bytes.Buffer
+	if err := Render(&buf, v, FormatTable, false); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "airplay    \n") {
+		t.Errorf("row with empty trailing cell should not end with padding, got:\n%q", out)
+	}
+	if !strings.Contains(out, "airplay  airplay\n") {
+		t.Errorf("row should stop after last non-empty cell, got:\n%q", out)
+	}
 }
 
 func TestRenderErrorJSONShape(t *testing.T) {

@@ -144,10 +144,9 @@ func renderYAML(w io.Writer, v any) error {
 	return err
 }
 
-// renderTable writes a small key/value layout. It deliberately avoids any
-// tablewriter dependency — we only need two shapes (map and slice of
-// maps), and a fancier layout is the wrong place to spend complexity for
-// this CLI.
+// renderTable writes compact human layouts for key/value maps and row lists.
+// It deliberately avoids a tablewriter dependency; the CLI only needs simple
+// aligned columns and a compact one-column list shape.
 func renderTable(w io.Writer, v any, isTTY bool) error {
 	useColor := colorEnabled(isTTY)
 
@@ -168,21 +167,167 @@ func renderTable(w io.Writer, v any, isTTY bool) error {
 			_, err := fmt.Fprintln(w, "ok")
 			return err
 		}
-		for i, row := range m {
-			if i > 0 {
-				if _, err := fmt.Fprintln(w); err != nil {
-					return err
-				}
-			}
-			if err := writeKV(w, row, useColor); err != nil {
-				return err
-			}
+		if isSingleColumnRows(m) {
+			return writeSingleColumnRows(w, m, useColor)
 		}
-		return nil
+		return writeRowsTable(w, m, useColor)
 	}
 
 	// Fallback: reflect over struct fields / maps with non-string keys.
 	return writeReflective(w, v, useColor)
+}
+
+// isSingleColumnRows reports whether every row has the same lone field.
+// That shape is used by list-style commands such as `input`, `sound`, and
+// `decoder`; rendering it as repeated key/value blocks is needlessly noisy.
+func isSingleColumnRows(rows []map[string]any) bool {
+	if len(rows) == 0 || len(rows[0]) != 1 {
+		return false
+	}
+
+	var field string
+	for k := range rows[0] {
+		field = k
+	}
+	for _, row := range rows[1:] {
+		if len(row) != 1 {
+			return false
+		}
+		if _, ok := row[field]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func writeSingleColumnRows(w io.Writer, rows []map[string]any, useColor bool) error {
+	var field string
+	for k := range rows[0] {
+		field = k
+	}
+
+	heading := field
+	if useColor {
+		heading = dim(field)
+	}
+	if _, err := fmt.Fprintln(w, heading); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if _, err := fmt.Fprintf(w, "  %v\n", row[field]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeRowsTable(w io.Writer, rows []map[string]any, useColor bool) error {
+	columns := rowColumns(rows)
+	widths := make(map[string]int, len(columns))
+	for _, col := range columns {
+		widths[col] = len(col)
+	}
+	for _, row := range rows {
+		for _, col := range columns {
+			if n := len(formatCell(row[col])); n > widths[col] {
+				widths[col] = n
+			}
+		}
+	}
+
+	for i, col := range columns {
+		header := col
+		if useColor {
+			header = dim(col)
+		}
+		if i > 0 {
+			if _, err := fmt.Fprint(w, "  "); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprint(w, header); err != nil {
+			return err
+		}
+		if i < len(columns)-1 {
+			if _, err := fmt.Fprint(w, strings.Repeat(" ", widths[col]-len(col))); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		last := lastNonEmptyColumn(row, columns)
+		for i, col := range columns[:last+1] {
+			cell := formatCell(row[col])
+			if i > 0 {
+				if _, err := fmt.Fprint(w, "  "); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprint(w, cell); err != nil {
+				return err
+			}
+			if i < last {
+				if _, err := fmt.Fprint(w, strings.Repeat(" ", widths[col]-len(cell))); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func lastNonEmptyColumn(row map[string]any, columns []string) int {
+	for i := len(columns) - 1; i >= 0; i-- {
+		if formatCell(row[columns[i]]) != "" {
+			return i
+		}
+	}
+	return 0
+}
+
+func rowColumns(rows []map[string]any) []string {
+	seen := make(map[string]bool)
+	for _, row := range rows {
+		for k := range row {
+			seen[k] = true
+		}
+	}
+
+	preferred := []string{
+		"now", "selected", "current", "num", "number", "input", "type",
+		"notes", "capabilities", "name", "host", "model", "zone", "scope",
+		"function", "access", "description", "text", "band", "freq",
+		"freq_human", "play_info", "play_info_type", "account_setup",
+		"linkable", "renameable", "udn",
+	}
+	columns := make([]string, 0, len(seen))
+	for _, k := range preferred {
+		if seen[k] {
+			columns = append(columns, k)
+			delete(seen, k)
+		}
+	}
+
+	rest := make([]string, 0, len(seen))
+	for k := range seen {
+		rest = append(rest, k)
+	}
+	sort.Strings(rest)
+	return append(columns, rest...)
+}
+
+func formatCell(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
 }
 
 // writeKV prints a sorted key: value listing with two-space alignment.

@@ -12,12 +12,13 @@ import (
 )
 
 func newInputCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "input [name]",
 		Short: "List or switch the active zone's input",
 		Long: "Switch the active zone to the given input.\n\n" +
-			"Run with no argument to print the inputs supported by the active\n" +
-			"zone (sourced from getFeatures, so the list is device-specific).",
+			"Run with no argument to print the active zone's current input plus\n" +
+			"the inputs supported by the device (sourced from getStatus and\n" +
+			"getFeatures, so the list is device-specific).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := stateFromCmd(cmd)
@@ -31,7 +32,20 @@ func newInputCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return printResult(cmd, buildNameListPayload("input", allowedInputs(feats, s.zone)))
+
+				var status *yxc.Status
+				err = runWithRediscover(ctx, s, func(c *yxc.Client) error {
+					st, e := c.GetStatus(ctx, s.zone)
+					if e != nil {
+						return e
+					}
+					status = st
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				return printResult(cmd, buildInputListPayload(feats, s.zone, status.Input))
 			}
 			name := strings.TrimSpace(args[0])
 
@@ -49,6 +63,7 @@ func newInputCmd() *cobra.Command {
 			return printResult(cmd, map[string]any{})
 		},
 	}
+	return cmd
 }
 
 // validateInput verifies the input name against the active zone's input
@@ -78,4 +93,98 @@ func allowedInputs(feats *yxc.Features, zone string) []string {
 // isInputAllowed reports whether name is in the active zone's input set.
 func isInputAllowed(feats *yxc.Features, zone, name string) bool {
 	return slices.Contains(allowedInputs(feats, zone), name)
+}
+
+func buildInputListPayload(feats *yxc.Features, zone, current string) []map[string]any {
+	names := allowedInputs(feats, zone)
+	items := inputItemsByID(feats)
+	rows := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		item, ok := items[name]
+		rows = append(rows, map[string]any{
+			"current": selectedMarker(name == current),
+			"input":   name,
+			"type":    inputType(name, item.PlayInfoType),
+			"notes":   strings.Join(inputNotes(ok, item), ", "),
+		})
+	}
+	return rows
+}
+
+func inputItemsByID(feats *yxc.Features) map[string]yxc.InputItem {
+	if feats == nil {
+		return nil
+	}
+	out := make(map[string]yxc.InputItem, len(feats.System.InputList))
+	for _, item := range feats.System.InputList {
+		out[item.ID] = item
+	}
+	return out
+}
+
+func selectedMarker(selected bool) string {
+	if selected {
+		return "*"
+	}
+	return ""
+}
+
+func inputType(name, playInfoType string) string {
+	switch name {
+	case "pandora", "spotify", "tidal", "deezer":
+		return "service"
+	case "airplay":
+		return "airplay"
+	case "mc_link":
+		return "link"
+	case "server":
+		return "server"
+	case "net_radio":
+		return "radio"
+	case "bluetooth":
+		return "bluetooth"
+	case "usb":
+		return "usb"
+	}
+
+	switch playInfoType {
+	case "netusb":
+		return "media"
+	case "tuner":
+		return "tuner"
+	case "none":
+		switch {
+		case strings.HasPrefix(name, "hdmi"):
+			return "hdmi"
+		case strings.HasPrefix(name, "av"):
+			return "av"
+		case strings.HasPrefix(name, "audio"):
+			return "audio"
+		case name == "aux":
+			return "aux"
+		default:
+			return "physical"
+		}
+	case "":
+		return ""
+	default:
+		return playInfoType
+	}
+}
+
+func inputNotes(known bool, item yxc.InputItem) []string {
+	if !known {
+		return nil
+	}
+	var out []string
+	if item.AccountEnable {
+		out = append(out, "account setup")
+	}
+	if item.DistributionEnable {
+		out = append(out, "link")
+	}
+	if item.RenameEnable {
+		out = append(out, "rename")
+	}
+	return out
 }

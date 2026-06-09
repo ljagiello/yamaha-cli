@@ -90,6 +90,34 @@ func fatFeatures() *yxc.Features {
 	}
 }
 
+func inputListFeatures() *yxc.Features {
+	return &yxc.Features{
+		ResponseCode: 0,
+		System: yxc.SystemFeatures{
+			ZoneNum: 1,
+			InputList: []yxc.InputItem{
+				{
+					ID:                 "pandora",
+					DistributionEnable: true,
+					AccountEnable:      true,
+					PlayInfoType:       "netusb",
+				},
+				{
+					ID:                 "hdmi2",
+					DistributionEnable: true,
+					RenameEnable:       true,
+					PlayInfoType:       "none",
+				},
+			},
+		},
+		Zone: []yxc.ZoneFeatures{{
+			ID:        "main",
+			FuncList:  []string{"power", "volume", "prepare_input_change"},
+			InputList: []string{"pandora", "hdmi2"},
+		}},
+	}
+}
+
 // writeCachedFeatures persists feats at the cache path that
 // yxc.FeaturesCache will look up for deviceID. The format must match
 // what cache.save writes (json.Encoder with indent), but encoding/json
@@ -102,6 +130,89 @@ func writeCachedFeatures(t *testing.T, path string, feats *yxc.Features) {
 	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("write cache: %v", err)
+	}
+}
+
+func TestBuildInputListPayloadIncludesCurrentAndMetadata(t *testing.T) {
+	rows := buildInputListPayload(inputListFeatures(), "main", "hdmi2")
+	if len(rows) != 2 {
+		t.Fatalf("rows: got %d, want 2", len(rows))
+	}
+
+	if rows[0]["current"] != "" || rows[0]["input"] != "pandora" {
+		t.Errorf("pandora row current/input = %q/%q", rows[0]["current"], rows[0]["input"])
+	}
+	if rows[0]["type"] != "service" || rows[0]["notes"] != "account setup, link" {
+		t.Errorf("pandora metadata row = %#v", rows[0])
+	}
+	if rows[1]["current"] != "*" || rows[1]["input"] != "hdmi2" {
+		t.Errorf("hdmi2 row current/input = %q/%q", rows[1]["current"], rows[1]["input"])
+	}
+	if rows[1]["type"] != "hdmi" || rows[1]["notes"] != "link, rename" {
+		t.Errorf("hdmi2 metadata row = %#v", rows[1])
+	}
+}
+
+func TestRunInputNoArgShowsCurrentAndMetadata(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEC60001"
+	cachePath := resolvedCachePath(t, deviceID)
+	writeCachedFeatures(t, cachePath, inputListFeatures())
+
+	var setInputHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/main/getStatus"):
+			_, _ = w.Write([]byte(`{"response_code":0,"power":"on","volume":60,"mute":false,"input":"hdmi2"}`))
+		case strings.HasSuffix(r.URL.Path, "/main/setInput"):
+			atomic.AddInt32(&setInputHits, 1)
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:   &config.Config{Devices: map[string]config.Device{}},
+		alias: "test",
+		device: config.Device{
+			Host:        srv.URL,
+			DeviceID:    deviceID,
+			DefaultZone: "main",
+		},
+		zone:   "main",
+		client: c,
+	}
+
+	cmd := newInputCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, s)
+	out := &strings.Builder{}
+	cmd.SetOut(out)
+	cmd.SetErr(&strings.Builder{})
+	cmd.Flags().String("output", "table", "")
+	cmd.SetArgs(nil)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := atomic.LoadInt32(&setInputHits); got != 0 {
+		t.Errorf("setInput hits: got %d, want 0", got)
+	}
+
+	body := out.String()
+	for _, want := range []string{"current", "input", "type", "notes", "pandora", "account setup, link", "*        hdmi2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("output missing %q; got:\n%s", want, body)
+		}
 	}
 }
 
