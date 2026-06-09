@@ -90,6 +90,42 @@ func fatFeatures() *yxc.Features {
 	}
 }
 
+func inputListFeatures() *yxc.Features {
+	return &yxc.Features{
+		ResponseCode: 0,
+		System: yxc.SystemFeatures{
+			ZoneNum: 1,
+			InputList: []yxc.InputItem{
+				{
+					ID:                 "pandora",
+					DistributionEnable: true,
+					AccountEnable:      true,
+					PlayInfoType:       "netusb",
+				},
+				{
+					ID:                 "hdmi2",
+					DistributionEnable: true,
+					RenameEnable:       true,
+					PlayInfoType:       "none",
+				},
+				// Mirrors the RX-V583 fixture: spotify is netusb with
+				// account_enable=false (Spotify Connect auths in-app), so
+				// it must classify as service without account-ness.
+				{
+					ID:                 "spotify",
+					DistributionEnable: true,
+					PlayInfoType:       "netusb",
+				},
+			},
+		},
+		Zone: []yxc.ZoneFeatures{{
+			ID:        "main",
+			FuncList:  []string{"power", "volume", "prepare_input_change"},
+			InputList: []string{"pandora", "hdmi2", "spotify"},
+		}},
+	}
+}
+
 // writeCachedFeatures persists feats at the cache path that
 // yxc.FeaturesCache will look up for deviceID. The format must match
 // what cache.save writes (json.Encoder with indent), but encoding/json
@@ -102,6 +138,211 @@ func writeCachedFeatures(t *testing.T, path string, feats *yxc.Features) {
 	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("write cache: %v", err)
+	}
+}
+
+func TestBuildInputListPayloadIncludesCurrentAndMetadata(t *testing.T) {
+	rows := buildInputListPayload(inputListFeatures(), "main", "hdmi2")
+	if len(rows) != 3 {
+		t.Fatalf("rows: got %d, want 3", len(rows))
+	}
+
+	if rows[0]["current"] != "" || rows[0]["input"] != "pandora" {
+		t.Errorf("pandora row current/input = %q/%q", rows[0]["current"], rows[0]["input"])
+	}
+	if rows[0]["type"] != "service" || rows[0]["notes"] != "account setup, link" {
+		t.Errorf("pandora metadata row = %#v", rows[0])
+	}
+	if rows[1]["current"] != "*" || rows[1]["input"] != "hdmi2" {
+		t.Errorf("hdmi2 row current/input = %q/%q", rows[1]["current"], rows[1]["input"])
+	}
+	if rows[1]["type"] != "hdmi" || rows[1]["notes"] != "link, rename" {
+		t.Errorf("hdmi2 metadata row = %#v", rows[1])
+	}
+	// spotify pins the round-1 regression at the payload layer: it must
+	// classify as service despite account_enable=false.
+	if rows[2]["input"] != "spotify" || rows[2]["type"] != "service" || rows[2]["notes"] != "link" {
+		t.Errorf("spotify metadata row = %#v", rows[2])
+	}
+}
+
+// TestInputType pins every return path. The service cases mirror the
+// RX-V583 fixture (testdata/getFeatures.json): spotify is netusb with
+// account_enable=false, so classification must come from play_info_type,
+// not account-ness.
+func TestInputType(t *testing.T) {
+	cases := []struct {
+		name         string
+		playInfoType string
+		want         string
+	}{
+		{"airplay", "netusb", "airplay"},
+		{"mc_link", "netusb", "link"},
+		{"server", "netusb", "server"},
+		{"net_radio", "netusb", "radio"},
+		{"bluetooth", "netusb", "bluetooth"},
+		{"usb", "netusb", "usb"},
+		{"spotify", "netusb", "service"},
+		{"pandora", "netusb", "service"},
+		{"amazon_music", "netusb", "service"},
+		{"tuner", "tuner", "tuner"},
+		{"hdmi1", "none", "hdmi"},
+		{"av2", "none", "av"},
+		{"audio3", "none", "audio"},
+		{"aux", "none", "aux"},
+		{"phono", "none", "physical"},
+		{"ghost", "", ""},
+		{"cd", "cd", "cd"},
+	}
+	for _, tc := range cases {
+		if got := inputType(tc.name, tc.playInfoType); got != tc.want {
+			t.Errorf("inputType(%q, %q) = %q, want %q", tc.name, tc.playInfoType, got, tc.want)
+		}
+	}
+}
+
+// TestBuildInputListPayloadUnknownInput covers an input the zone lists
+// but System.InputList doesn't describe (stale firmware metadata): the
+// row renders with empty type and notes rather than panicking or
+// inventing values.
+func TestBuildInputListPayloadUnknownInput(t *testing.T) {
+	feats := inputListFeatures()
+	feats.Zone[0].InputList = append(feats.Zone[0].InputList, "ghost")
+
+	rows := buildInputListPayload(feats, "main", "")
+	last := rows[len(rows)-1]
+	if last["input"] != "ghost" || last["type"] != "" || last["notes"] != "" {
+		t.Errorf("unknown input row = %#v", last)
+	}
+}
+
+func TestRunInputNoArgShowsCurrentAndMetadata(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEC60001"
+	cachePath := resolvedCachePath(t, deviceID)
+	writeCachedFeatures(t, cachePath, inputListFeatures())
+
+	var setInputHits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/main/getStatus"):
+			_, _ = w.Write([]byte(`{"response_code":0,"power":"on","volume":60,"mute":false,"input":"hdmi2"}`))
+		case strings.HasSuffix(r.URL.Path, "/main/setInput"):
+			atomic.AddInt32(&setInputHits, 1)
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:   &config.Config{Devices: map[string]config.Device{}},
+		alias: "test",
+		device: config.Device{
+			Host:        srv.URL,
+			DeviceID:    deviceID,
+			DefaultZone: "main",
+		},
+		zone:   "main",
+		client: c,
+	}
+
+	cmd := newInputCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, s)
+	out := &strings.Builder{}
+	cmd.SetOut(out)
+	cmd.SetErr(&strings.Builder{})
+	cmd.Flags().String("output", "table", "")
+	cmd.SetArgs(nil)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := atomic.LoadInt32(&setInputHits); got != 0 {
+		t.Errorf("setInput hits: got %d, want 0", got)
+	}
+
+	body := out.String()
+	for _, want := range []string{"current", "input", "type", "notes", "pandora", "account setup, link", "*        hdmi2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("output missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+// TestRunInputNoArgDegradesWhenStatusFails pins the contract that the
+// no-arg list is cache-backed: a getStatus failure (receiver off, network
+// down) must not fail the command — it renders the list with an empty
+// current column and a stderr warning.
+func TestRunInputNoArgDegradesWhenStatusFails(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DEC60002"
+	cachePath := resolvedCachePath(t, deviceID)
+	writeCachedFeatures(t, cachePath, inputListFeatures())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/main/getStatus"):
+			http.Error(w, "boom", http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := yxc.New(srv.URL)
+	if err != nil {
+		t.Fatalf("yxc.New: %v", err)
+	}
+	s := &state{
+		cfg:   &config.Config{Devices: map[string]config.Device{}},
+		alias: "test",
+		device: config.Device{
+			Host:        srv.URL,
+			DeviceID:    deviceID,
+			DefaultZone: "main",
+		},
+		zone:   "main",
+		client: c,
+	}
+
+	cmd := newInputCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, s)
+	out := &strings.Builder{}
+	errOut := &strings.Builder{}
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.Flags().String("output", "table", "")
+	cmd.SetArgs(nil)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute should degrade, not fail: %v", err)
+	}
+
+	body := out.String()
+	for _, want := range []string{"pandora", "hdmi2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("output missing %q; got:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "*") {
+		t.Errorf("no current marker expected when getStatus fails, got:\n%s", body)
+	}
+	if !strings.Contains(errOut.String(), "warning: current input unknown") {
+		t.Errorf("stderr missing degradation warning, got:\n%s", errOut.String())
 	}
 }
 

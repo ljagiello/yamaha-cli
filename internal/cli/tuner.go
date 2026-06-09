@@ -354,8 +354,8 @@ func buildTunerStatusPayload(st *yxc.TunerStatus) map[string]any {
 }
 
 // buildTunerPresetsPayload converts a TunerPresetInfo into a slice of
-// stable per-row maps. The output renderer prints these as multiple
-// table sections in TTY mode and as a JSON array otherwise.
+// stable per-row maps. The output renderer prints these as an aligned table
+// in TTY mode and as a JSON array otherwise.
 func buildTunerPresetsPayload(info *yxc.TunerPresetInfo) []map[string]any {
 	if info == nil {
 		return nil
