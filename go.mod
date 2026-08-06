@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/koron/go-ssdp v0.9.1
-	github.com/mattn/go-isatty v0.0.23
+	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
 )
