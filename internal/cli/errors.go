@@ -52,7 +52,7 @@ func newUsageError(format string, args ...any) error {
 type noDeviceConfiguredError struct{}
 
 func (e *noDeviceConfiguredError) Error() string {
-	return "no device configured; run 'yamaha discover' or pass --host"
+	return "no device configured; run 'yamaha discover --add' or 'yamaha config add <alias> --host <ip>', or pass --host"
 }
 
 // unreachableError indicates a network failure where DHCP-resilience also

@@ -23,11 +23,14 @@ Then point the CLI at a receiver (pick **one**):
 
 | Path | When | Persistence |
 |---|---|---|
-| `yamaha discover --add` | First time, interactive | Saved to config with UDN; survives DHCP IP changes |
+| `yamaha config add <alias> --host <ip>` | Known IP; non-interactive (agents, scripts, multicast blocked) | Saved to config; UDN too if the probe reaches the receiver |
+| `yamaha discover --add` | First time, interactive (needs a TTY) | Saved to config with UDN; survives DHCP IP changes |
 | `YAMAHA_HOST=<ip>` env var | One-shot, scripted | None |
 | `--host <ip>` flag on each invocation | Quick experiments | None |
 
-If no host is configured and stdout is a TTY, any command triggers an interactive wizard. If non-TTY, it exits 64 with a hint.
+**Agents: persist a receiver with `config add`.** There is no TTY, so the first-run wizard and `discover --add` can't prompt. Get the IP from the user, or from `yamaha discover --output json` if multicast reaches the receiver. If the probe fails, `config add` prints a `warning:` and saves without a UDN (no DHCP resilience). The alias becomes `default_device` if none is set yet (`--set-default` forces it); `--force` overwrites an existing alias (otherwise exit 1). Flags: [references/COMMANDS.md](references/COMMANDS.md).
+
+`--host` / `YAMAHA_HOST` skip the config: no wizard runs and nothing is saved. Without them, if no device resolves from config, a receiver command on a TTY starts an interactive wizard; non-TTY, it exits 64 with a hint.
 
 ## Doing things
 
@@ -86,6 +89,7 @@ yamaha preset recall 3
 
 ```bash
 yamaha discover                              # SSDP scan, list found Yamaha devices (no state changes)
+yamaha config add <alias> --host <ip>        # save a receiver non-interactively (probes for its UDN)
 yamaha config show                           # dump resolved config as JSON/YAML/table
 yamaha config path                           # print config file path
 ```
@@ -134,7 +138,7 @@ power=$(yamaha status --output json | jq -r .power)
 | 0 | Success | Continue |
 | 1 | Validation error / power-on timeout | Bad input; surface to user |
 | 2 | CLI usage error (invalid flag combo) | Fix the command |
-| 64 | No device configured, non-interactive | Set `YAMAHA_HOST` or `--host` |
+| 64 | No device configured, non-interactive | Save one with `config add <alias> --host <ip>`, or pass `--host` / `YAMAHA_HOST` |
 | 69 | Device unreachable (transport failure, retry exhausted) | Network problem; receiver may be off |
 | 70 | YXC `response_code != 0`, or YNCA `@UNDEFINED` (feature unsupported, device not ready) | Check `yxc_response_code` in error JSON |
 | 75 | YNCA `@RESTRICTED` — valid command, not allowed in the current device state (e.g. zone in standby) | Fix device state (power on the zone) and retry |
@@ -157,11 +161,11 @@ These are non-obvious; check before assuming.
 - **Input switching may auto-fire `prepareInputChange` first** for inputs whose `func_list` requires it (e.g., `server`, `net_radio`). This is internal and free; just don't be surprised by two HTTP requests in `--debug`.
 - **`reboot` always requires `--yes`,** even on a TTY. The flag exists to prevent a stray pipeline from power-cycling the receiver. The CLI treats a post-ack transport error as success — the receiver routinely drops the TCP connection mid-reboot.
 - **`watch` is long-lived.** It runs until SIGINT (Ctrl-C); the subscriber auto-reconnects with exponential backoff (1 s → 60 s) when the receiver goes silent for 30 s. Don't set a timeout shorter than the silent-after window or you'll get spurious reconnects.
-- **`link create` / `link dissolve` need aliases**, not raw IPs — the operation runs against multiple receivers. Add devices with `discover --add` first if you only have one configured.
+- **`link create` / `link dissolve` need aliases**, not raw IPs — the operation runs against multiple receivers. Save each one first with `config add <alias> --host <ip>` (or `discover --add` on a TTY).
 - **`tuner fm <MHz>` takes MHz, `tuner am <kHz>` takes kHz.** Easy to mix up — the CLI validates against the device's reported range when available, but a typo can still tune to a wrong (valid) frequency.
 - **`raw` parameters are url-encoded automatically.** Repeated keys append, so `client_list[0].ip_address=…` works as a positional `k=v` arg. Quote args with brackets to keep the shell happy.
 - **`ynca` runs a one-shot probe** before sending. Devices that don't speak YNCA fail with exit 70 and a `does not support YNCA` message. RX-V583 supports both protocols.
-- **DHCP IP changes are handled transparently** when the device was added via `discover --add` (the UDN is stored). Anonymous `--host` / `YAMAHA_HOST` calls do **not** auto-recover.
+- **DHCP IP changes are handled transparently** when the config entry has a UDN (saved by the wizard, `discover --add`, or a `config add` whose probe succeeded). Anonymous `--host` / `YAMAHA_HOST` calls do **not** auto-recover.
 - **No HTTPS, no auth.** Anyone on the LAN can issue commands. Don't expose the receiver to untrusted networks.
 - **YXC is GET-only.** All operations are `GET /YamahaExtendedControl/v1/<method>?<params>` on port 80. No POSTs, no JSON request bodies. (YNCA is a separate line protocol on TCP/50000.)
 
@@ -192,8 +196,8 @@ No manual `sleep` needed — `power on` blocks until ready.
 
 ### Discover and save a receiver in CI/scripts
 ```bash
-yamaha discover --output json | jq '.[0]'   # see what's there
-yamaha discover --add                        # interactive; wizards through pick + alias
+yamaha discover --output json | jq '.[0]'            # see what's there (needs SSDP multicast)
+yamaha config add living-room --host 192.168.1.116   # save it; no TTY needed
 ```
 
 ### Scripted volume nudge with sanity check

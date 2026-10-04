@@ -53,11 +53,18 @@ sound_program  straight
 
 After that, the alias is the default; subsequent commands hit it directly.
 
-Non-interactive (CI, scripts) — pass `--host` or set `YAMAHA_HOST`:
+The wizard runs only in a terminal, and only when no device resolves from flags, env, or config. Passing `--host` or `YAMAHA_HOST` to a receiver command bypasses the config entirely — handy for one-shots and scripts, but it never triggers the wizard and nothing is saved:
 
 ```bash
-YAMAHA_HOST=192.168.1.116 yamaha status
+YAMAHA_HOST=192.168.1.116 yamaha status      # works; config untouched
 ```
+
+To save a receiver, use any of:
+
+- the wizard — run a receiver command (e.g. `yamaha status`) in a terminal, without `--host`/`YAMAHA_HOST`;
+- `yamaha discover --add` — SSDP scan, then pick and name a device (also needs a terminal);
+- `yamaha config add <alias> --host <ip>` — non-interactive; for when you already know the IP or multicast doesn't reach the receiver;
+- editing the YAML at `yamaha config path` (see [Configuration](#configuration)).
 
 ## Commands
 
@@ -120,6 +127,7 @@ yamaha info [--all-zones]                    # model/firmware + zone capabilitie
 
 # Discovery & config:
 yamaha discover [--add]                      # SSDP scan; --add saves to config
+yamaha config add <alias> --host <ip> [...]  # save a known IP (no TTY, no multicast)
 yamaha config show                           # print loaded config
 yamaha config path                           # print config file path
 yamaha completion {bash|zsh|fish|powershell}
@@ -209,7 +217,7 @@ Config lives where Go's `os.UserConfigDir()` points, plus `yamaha-cli/config.yam
 - **macOS:** `~/Library/Application Support/yamaha-cli/config.yaml`
 - **Windows:** `%AppData%\yamaha-cli\config.yaml`
 
-Run `yamaha config path` to print the resolved path. The wizard, `discover --add`, and the DHCP-resilience flow all write through a `<file>.tmp` + rename so concurrent invocations cannot corrupt it.
+Run `yamaha config path` to print the resolved path. The wizard, `discover --add`, `config add`, and the DHCP-resilience flow all write through a `<file>.tmp` + rename so concurrent invocations cannot corrupt it.
 
 ```yaml
 default_device: living-room
@@ -229,7 +237,7 @@ devices:
 
 Flag wins over env wins over config:
 
-1. `--host <ip>` — anonymous (no alias, no UDN, no DHCP-resilience).
+1. `--host <ip>` — anonymous (no alias, no UDN, no DHCP-resilience). Skips the config: no wizard, nothing saved.
 2. `YAMAHA_HOST` — same semantics as `--host`.
 3. `--device <alias>` → look up in `devices`.
 4. `YAMAHA_DEVICE` → look up in `devices`.
@@ -308,7 +316,7 @@ Sysexits-lite. Errors go to stderr in `error: <message>` form regardless of `--o
 | `ynca list` / `ynca diff` | no (offline; need no device) |
 | `info` | reads the active `--zone`'s capabilities |
 | `discover` | no |
-| `config show` / `config path` | no |
+| `config show` / `config path` / `config add` | no |
 | `completion` | no |
 | `version` | no |
 
@@ -405,7 +413,7 @@ On any transport error — YXC HTTP or YNCA TCP — the CLI runs a 3 s SSDP scan
 **Skipped when:**
 
 - Active device came from `--host` / `YAMAHA_HOST` (anonymous, no UDN).
-- The config entry has no UDN (pre-v5 config). Re-run `yamaha discover --add` to refresh the entry, or use `--host` directly. Otherwise: exit 69.
+- The config entry has no UDN (pre-v5 config, or `config add` couldn't probe the receiver). Re-run `yamaha discover --add` or `yamaha config add <alias> --host <ip> --force` to refresh the entry, or use `--host` directly. Otherwise: exit 69.
 
 At most one rediscovery attempt per command. Repeated failures fall through to exit 69.
 
