@@ -11,14 +11,15 @@ import (
 
 // isolateFromUserEnv points config.Path at a fresh, empty temp dir and
 // clears the YAMAHA_* env vars the root command reads, so neither the
-// developer's real config nor their shell leaks into the test. macOS
-// os.UserConfigDir ignores XDG and uses $HOME/Library/Application
-// Support, hence both HOME and XDG_CONFIG_HOME.
+// developer's real config nor their shell leaks into the test.
+// os.UserConfigDir reads XDG_CONFIG_HOME on Linux, $HOME on macOS and
+// %AppData% on Windows, hence all three.
 func isolateFromUserEnv(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("APPDATA", tmp)
 	for _, k := range []string{"YAMAHA_HOST", "YAMAHA_DEVICE", "YAMAHA_ZONE", "YAMAHA_DEBUG"} {
 		t.Setenv(k, "")
 	}
