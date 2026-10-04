@@ -14,4 +14,7 @@
 // Search returns all Yamaha devices found within the timeout.
 // LookupByUDN returns the device whose UDN matches; it is the entry point
 // for the DHCP-resilience flow in the README.
+// Describe reads one already-known host's description via unicast SSDP,
+// falling back to the well-known Yamaha description URL; it backs saving a
+// device by IP, UDN included, without a multicast scan.
 package discover
