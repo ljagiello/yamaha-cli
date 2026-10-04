@@ -204,8 +204,8 @@ func newRootCmd() *cobra.Command {
 // setupState runs once per invocation, after flag parsing but before the
 // subcommand's RunE. It builds the *state and attaches it to the cobra
 // command's context. Subcommands that don't need a YXC client (version,
-// completion, config show, config path, discover) opt out by setting
-// DisableAutoGenTag=true on themselves and checking with needsDevice().
+// completion, the config subcommands, discover, shell completion requests)
+// are exempted by name in needsDevice().
 func setupState(cmd *cobra.Command) error {
 	// Flags
 	hostFlag, _ := cmd.Flags().GetString("host")
@@ -305,16 +305,23 @@ func setupState(cmd *cobra.Command) error {
 // completion, the config subcommands, discover, help) opt out so they
 // keep working with no config file or LAN connectivity.
 func needsDevice(cmd *cobra.Command) bool {
+	// Every `config` subcommand manages the config file and never uses the
+	// per-invocation client; checking the parent exempts new ones too.
+	if p := cmd.Parent(); p != nil && p.Name() == "config" {
+		return false
+	}
 	// Walk up the command chain to find the leaf name.
 	name := cmd.Name()
 	switch name {
 	case "version", "completion", "help", "discover":
 		return false
-	case "show", "path":
-		// `config show` / `config path` — leaf names; check parent.
-		if cmd.Parent() != nil && cmd.Parent().Name() == "config" {
-			return false
-		}
+	case cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+		// Hidden command the shell completion scripts call on every <TAB>.
+		// (__completeNoDesc is an alias, so Name() reports __complete.)
+		// Completion requests run with a client-less state: any future
+		// ValidArgsFunction / RegisterFlagCompletionFunc must not assume
+		// s.client != nil.
+		return false
 	case "diff", "list":
 		// `ynca diff` (offline transcript compare) and `ynca list` (static
 		// function catalog) never touch the receiver — leaf names; check
