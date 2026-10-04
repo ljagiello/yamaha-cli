@@ -219,8 +219,8 @@ func TestConfigAdd_UsageErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			isolateFromUserEnv(t)
-			// An existing device lets the root's device resolution pass
-			// for the "no host" case until config subcommands skip it.
+			// Seed a config so the test can assert a usage error leaves
+			// it unchanged.
 			seed := &config.Config{
 				DefaultDevice: "living-room",
 				Devices:       map[string]config.Device{"living-room": {Host: "192.168.1.116", DefaultZone: "main"}},
@@ -257,6 +257,9 @@ func TestConfigAdd_InterruptedProbeSavesNothing(t *testing.T) {
 	_, _, err := execConfigAdd(ctx, "living-room", "--host", "192.168.1.116")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if code := ErrorExitCode(err); code != 130 {
+		t.Errorf("exit code: got %d want 130", code)
 	}
 	if _, statErr := os.Stat(config.Path()); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("config file must not be written after an interrupted probe (stat err: %v)", statErr)
