@@ -21,20 +21,6 @@ var probedRXV583 = discover.Device{
 	UDN:   "uuid:9ab0c000-f668-11de-9976-00a0defbe863",
 }
 
-// isolateConfig points config.Path at a fresh temp dir (HOME covers
-// macOS's ~/Library/Application Support, XDG_CONFIG_HOME covers Linux)
-// and clears the env vars device resolution reads, so neither the
-// developer's config nor their shell leaks into the test.
-func isolateConfig(t *testing.T) {
-	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	t.Setenv("XDG_CONFIG_HOME", tmp)
-	for _, k := range []string{"YAMAHA_HOST", "YAMAHA_DEVICE", "YAMAHA_ZONE", "YAMAHA_DEBUG"} {
-		t.Setenv(k, "")
-	}
-}
-
 // stubDescribe replaces the UPnP probe: it finds probedRXV583, or fails
 // with err when err is non-nil. It returns the hosts it was asked to probe.
 func stubDescribe(t *testing.T, err error) *[]string {
@@ -81,7 +67,7 @@ func loadConfig(t *testing.T) *config.Config {
 }
 
 func TestConfigAdd_SavesProbedDeviceAsFirstDefault(t *testing.T) {
-	isolateConfig(t)
+	isolateFromUserEnv(t)
 	probed := stubDescribe(t, nil)
 
 	stdout, stderr, err := execConfigAdd(context.Background(), " living-room ", "--host", "192.168.1.116")
@@ -112,7 +98,7 @@ func TestConfigAdd_SavesProbedDeviceAsFirstDefault(t *testing.T) {
 }
 
 func TestConfigAdd_ProbeFailureStillSavesWithoutUDN(t *testing.T) {
-	isolateConfig(t)
+	isolateFromUserEnv(t)
 	stubDescribe(t, errors.New("connection refused"))
 
 	_, stderr, err := execConfigAdd(context.Background(), "nr-800", "--host", "192.168.1.164")
@@ -134,7 +120,7 @@ func TestConfigAdd_ProbeFailureStillSavesWithoutUDN(t *testing.T) {
 }
 
 func TestConfigAdd_ExistingAliasNeedsForce(t *testing.T) {
-	isolateConfig(t)
+	isolateFromUserEnv(t)
 	seed := &config.Config{
 		DefaultDevice: "living-room",
 		Devices: map[string]config.Device{
@@ -168,7 +154,7 @@ func TestConfigAdd_ExistingAliasNeedsForce(t *testing.T) {
 }
 
 func TestConfigAdd_DefaultDeviceOnlyMovesWithSetDefault(t *testing.T) {
-	isolateConfig(t)
+	isolateFromUserEnv(t)
 	seedConfig(t, &config.Config{
 		DefaultDevice: "living-room",
 		Devices:       map[string]config.Device{"living-room": {Host: "192.168.1.116", DefaultZone: "main"}},
@@ -201,7 +187,7 @@ func TestConfigAdd_HostFallsBackToYAMAHA_HOST(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateConfig(t)
+			isolateFromUserEnv(t)
 			t.Setenv("YAMAHA_HOST", "192.168.1.130")
 			probed := stubDescribe(t, nil)
 
@@ -232,7 +218,7 @@ func TestConfigAdd_UsageErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			isolateConfig(t)
+			isolateFromUserEnv(t)
 			// An existing device lets the root's device resolution pass
 			// for the "no host" case until config subcommands skip it.
 			seed := &config.Config{
@@ -263,7 +249,7 @@ func TestConfigAdd_UsageErrors(t *testing.T) {
 // probe aborts the command instead of being treated as an unreachable
 // device and saving a UDN-less entry.
 func TestConfigAdd_InterruptedProbeSavesNothing(t *testing.T) {
-	isolateConfig(t)
+	isolateFromUserEnv(t)
 	stubDescribe(t, context.Canceled)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -9,17 +9,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// isolateFromUserEnv points config resolution at an empty temp dir and
-// clears the device env vars, so a developer's real config can't mask a
-// missing-device failure. macOS os.UserConfigDir ignores XDG and uses
-// $HOME/Library/Application Support, hence both.
+// isolateFromUserEnv points config.Path at a fresh, empty temp dir and
+// clears the YAMAHA_* env vars the root command reads, so neither the
+// developer's real config nor their shell leaks into the test. macOS
+// os.UserConfigDir ignores XDG and uses $HOME/Library/Application
+// Support, hence both HOME and XDG_CONFIG_HOME.
 func isolateFromUserEnv(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("YAMAHA_HOST", "")
-	t.Setenv("YAMAHA_DEVICE", "")
+	for _, k := range []string{"YAMAHA_HOST", "YAMAHA_DEVICE", "YAMAHA_ZONE", "YAMAHA_DEBUG"} {
+		t.Setenv(k, "")
+	}
 }
 
 // TestShellCompletion_NoDeviceConfigured is the regression for #22: the
