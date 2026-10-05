@@ -115,8 +115,8 @@ func (fc *FeaturesCache) LoadOrFetch(ctx context.Context, deviceID string, fetch
 }
 
 // tryLoad returns (features, true, nil) if a fresh cache file exists,
-// (nil, false, nil) on cache miss / expired, and (nil, false, err) on
-// genuine I/O / parse errors.
+// (nil, false, nil) on cache miss / expired / unparseable file, and
+// (nil, false, err) on genuine I/O errors.
 func (fc *FeaturesCache) tryLoad(path string) (*Features, bool, error) {
 	st, err := os.Stat(path)
 	if err != nil {

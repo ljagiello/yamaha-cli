@@ -203,9 +203,9 @@ func newRootCmd() *cobra.Command {
 
 // setupState runs once per invocation, after flag parsing but before the
 // subcommand's RunE. It builds the *state and attaches it to the cobra
-// command's context. Subcommands that don't need a YXC client (version,
-// completion, the config subcommands, discover, shell completion requests)
-// are exempted by name in needsDevice().
+// command's context. Subcommands that don't need a YXC client are exempted
+// in needsDevice(): the config subcommands by their parent, and version,
+// completion, help, discover and shell completion requests by name.
 func setupState(cmd *cobra.Command) error {
 	// Flags
 	hostFlag, _ := cmd.Flags().GetString("host")

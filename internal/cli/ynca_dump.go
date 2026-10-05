@@ -101,9 +101,10 @@ func runYncaDump(cmd *cobra.Command, _ []string) error {
 	for _, line := range commands {
 		lines, serr := c.SendMulti(ctx, line)
 		if serr != nil {
-			// A transport failure ends the dump; an application reply does
-			// not (SendMulti only errors on transport / no-reply). Record
-			// what happened and stop so the file isn't silently truncated.
+			// A transport failure or no-reply ends the dump; any other
+			// error (e.g. ynca.ErrTooManyLines for an oversized reply) is
+			// recorded and the dump moves on. Write the error first so a
+			// stopped dump isn't silently truncated.
 			fmt.Fprintf(bw, "# %s -> ERROR: %v\n", line, serr)
 			if ynca.IsTransport(serr) || errors.Is(serr, ynca.ErrNoReply) {
 				_ = bw.Flush()
