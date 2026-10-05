@@ -16,8 +16,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/ljagiello/yamaha-cli/internal/cli.Version={{.Version}}
-      - -X github.com/ljagiello/yamaha-cli/pkg/yxc.Version={{.Version}}
+      - -X main.Version={{.Version}}
     goos:
       - linux
       - darwin
