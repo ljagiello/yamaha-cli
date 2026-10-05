@@ -99,6 +99,35 @@ func TestHostFromLocation(t *testing.T) {
 	}
 }
 
+// TestNewDevice_RejectsIPv6Host covers a Location whose host is IPv6
+// or holds a '%': unbracketed in BaseURL it is malformed, and saved to
+// the config it is a host yxc and ynca cannot use, so the device is
+// refused.
+func TestNewDevice_RejectsIPv6Host(t *testing.T) {
+	desc := descDevice{FriendlyName: "RX-V583 FBE863", Manufacturer: yamahaManufacturer, ModelName: "RX-V583", UDN: sampleYamahaUDN}
+	for _, loc := range []string{
+		"http://[::1]:49154/MediaRenderer/desc.xml",
+		"http://[fe80::1%25en0]:49154/MediaRenderer/desc.xml",
+		"http://rx%25v583:49154/MediaRenderer/desc.xml",
+	} {
+		if dev, err := newDevice(loc, desc); err == nil {
+			t.Errorf("newDevice(%q) = %+v, want an error", loc, dev)
+		}
+	}
+
+	dev, err := newDevice("http://192.168.1.116:49154/MediaRenderer/desc.xml", desc)
+	want := Device{
+		Name:    "RX-V583 FBE863",
+		Host:    "192.168.1.116",
+		Model:   "RX-V583",
+		BaseURL: "http://192.168.1.116/YamahaExtendedControl/v1/",
+		UDN:     sampleYamahaUDN,
+	}
+	if err != nil || dev != want {
+		t.Errorf("newDevice(IPv4) = %+v, %v; want %+v", dev, err, want)
+	}
+}
+
 // withStubbedSearch installs a fake searchLocationsFn for the duration
 // of a test, returning a cleanup that restores the previous value.
 func withStubbedSearch(t *testing.T, fn func(ctx context.Context, st string, timeout time.Duration) ([]string, error)) {

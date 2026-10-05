@@ -99,6 +99,23 @@ func FuzzHostFromLocation(f *testing.F) {
 		if host != want {
 			t.Fatalf("hostFromLocation(%q) = %q, want %q", location, host, want)
 		}
+
+		// A Device built from this Location must carry a host the rest
+		// of the CLI can use as is.
+		dev, err := newDevice(location, descDevice{Manufacturer: yamahaManufacturer, UDN: sampleYamahaUDN})
+		if err != nil {
+			return
+		}
+		if strings.Contains(dev.Host, ":") {
+			t.Fatalf("newDevice(%q) accepted host %q", location, dev.Host)
+		}
+		base, err := url.Parse(dev.BaseURL)
+		if err != nil {
+			t.Fatalf("newDevice(%q): BaseURL %q does not parse: %v", location, dev.BaseURL, err)
+		}
+		if base.Hostname() != dev.Host {
+			t.Fatalf("newDevice(%q): BaseURL %q has hostname %q, want %q", location, dev.BaseURL, base.Hostname(), dev.Host)
+		}
 	})
 }
 

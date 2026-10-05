@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	ssdp "github.com/koron/go-ssdp"
@@ -297,9 +298,21 @@ func fetchOne(ctx context.Context, client *http.Client, location string) (Device
 	if desc.UDN == "" {
 		return Device{}, fmt.Errorf("%s: description has no UDN", location)
 	}
+	return newDevice(location, desc)
+}
+
+// newDevice builds the Device for the Yamaha description desc served at
+// location. A host with ':' (IPv6) or '%' (an IPv6 zone, or a
+// %25-escaped name) is refused: unbracketed in BaseURL it is malformed,
+// and saved to the config it is a host neither yxc nor ynca (which reads
+// any ':' as a port separator) can use.
+func newDevice(location string, desc descDevice) (Device, error) {
 	host, err := hostFromLocation(location)
 	if err != nil {
 		return Device{}, err
+	}
+	if strings.ContainsAny(host, ":%") {
+		return Device{}, fmt.Errorf("%s: host %q is not supported (IPv6 or contains '%%')", location, host)
 	}
 	return Device{
 		Name:    desc.FriendlyName,
