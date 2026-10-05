@@ -60,13 +60,15 @@ jobs:
 
       # Go fuzzes one target per invocation, so every Fuzz* function in
       # the module is listed and run in turn; new targets need no edit here.
+      # -fuzzminimizetime=0: 30s runs keep no corpus, minimizing starves
+      # slow targets, and an unminimized crasher still reproduces.
       - name: go test -fuzz
         run: |
           failed=0
           for pkg in $(go list ./...); do
             for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
               echo "::group::$target ($pkg)"
-              if ! go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s "$pkg"; then
+              if ! go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s -fuzzminimizetime=0 "$pkg"; then
                 echo "::error::$target failed in $pkg"
                 failed=1
               fi
