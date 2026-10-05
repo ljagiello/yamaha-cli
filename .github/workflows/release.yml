@@ -4,9 +4,28 @@ on:
   push:
     tags:
       - "v*"
+  # Actions → Release → Run workflow: tags main's HEAD with the next
+  # version and publishes it in the same run.
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump
+        type: choice
+        required: true
+        options: [patch, minor, major]
+      dry-run:
+        description: Build a snapshot; create no tag and publish nothing
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+
+# Allow only one release at a time; do NOT cancel in-progress runs (a
+# half-published release is worse than a queued one).
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   goreleaser:
@@ -15,6 +34,31 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # A tag pushed with GITHUB_TOKEN starts no workflow run, so the
+      # push-tag trigger above stays quiet and this run publishes it:
+      # one release, never two.
+      - name: Tag next version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          BUMP: ${{ inputs.bump }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Releases are cut from main, not $GITHUB_REF"
+            exit 1
+          fi
+          tag=$(.github/scripts/next-version.sh "$BUMP")
+          if [ "$DRY_RUN" = true ]; then
+            echo "Dry run: would release $tag" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
+          echo "Releasing $tag" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-go@v7
         with:
@@ -26,6 +70,6 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: ${{ inputs.dry-run && 'release --snapshot --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
