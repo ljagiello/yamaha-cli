@@ -518,6 +518,8 @@ What's still on the table:
 
 Maintainers: **Actions → Release → Run workflow**, then pick the version bump — `patch` for fixes, `minor` for features, `major` for breaking changes (while on 0.x, a `minor` bump may also break compatibility). Tick **dry-run** first to build everything without publishing. Pushing a `vX.Y.Z` tag by hand releases too.
 
+If a run fails after pushing its tag, re-running it is refused ("HEAD is already released"): delete the tag with `git push --delete origin vX.Y.Z` and run the workflow again. Any tag ruleset covering `v*` must let `github-actions[bot]` push.
+
 ## Contributing & License
 
 Personal-use CLI; PRs welcome but no guarantees on review velocity. MIT — see [LICENSE](./LICENSE).
