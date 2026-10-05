@@ -1,11 +1,9 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -45,14 +43,24 @@ func requireUsageError(t *testing.T, err error, call string) {
 	}
 }
 
-// writeFuzzFile writes data to a fresh temp file and returns its path.
-func writeFuzzFile(t *testing.T, data []byte) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "input.txt")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("write fuzz input: %v", err)
+// maxFuzzInput caps the byte inputs the file and JSON targets examine. These
+// parsers are line- or token-oriented, so longer inputs reach no new paths,
+// but they stall the run: Go's minimizer tries O(n²) byte-range removals on
+// every interesting input, and each try here does file I/O or JSON work.
+const maxFuzzInput = 512
+
+// fuzzFileWriter returns a function that writes data to one scratch file per
+// fuzz target and returns its path. A fuzz worker runs inputs one at a time,
+// so reusing the path is safe and much faster than a temp dir per input.
+func fuzzFileWriter(f *testing.F) func(t *testing.T, data []byte) string {
+	path := filepath.Join(f.TempDir(), "input.txt")
+	return func(t *testing.T, data []byte) string {
+		t.Helper()
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write fuzz input: %v", err)
+		}
+		return path
 	}
-	return path
 }
 
 // argSep joins fuzzed argv entries: OS arguments are C strings and can never
@@ -370,6 +378,9 @@ func FuzzDecodeRawReply(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > maxFuzzInput {
+			return
+		}
 		v := decodeRawReply(raw)
 		if len(raw) > 0 && !json.Valid(raw) && v != string(raw) {
 			t.Fatalf("decodeRawReply(%q) = %#v, want the bytes surfaced as a string", raw, v)
@@ -411,6 +422,9 @@ func FuzzFormatWatchEvent(f *testing.F) {
 	f.Add([]byte(nil), true)
 	const alias = "living-room"
 	f.Fuzz(func(t *testing.T, raw []byte, useTable bool) {
+		if len(raw) > maxFuzzInput {
+			return
+		}
 		line := formatWatchEvent(alias, &yxc.Event{Raw: raw}, useTable)
 		if len(raw) == 0 {
 			if line != "" {
@@ -455,6 +469,7 @@ func FuzzFormatWatchEvent(f *testing.F) {
 }
 
 func FuzzParseTranscript(f *testing.F) {
+	writeFuzzFile := fuzzFileWriter(f)
 	f.Add([]byte("# a dump header comment\n@MAIN:PWR=On\n@MAIN:VOL=-30.0\n# @ZONE3:PWR=? -> @UNDEFINED\n" +
 		"@tun:band=FM\ngarbage line without at\n@BAD\n@MAIN:INP=HDMI2\",\n\n"))
 	f.Add([]byte("# yamaha-cli YNCA dump\n# device: 192.168.1.116\n# commands: 2\n@MAIN:PWR=On\n# @ZONE9:PWR=? -> @UNDEFINED\n"))
@@ -462,13 +477,12 @@ func FuzzParseTranscript(f *testing.F) {
 	f.Add([]byte("@:X=1\n@A:=1\n@A=B:C\n@a:b:c=d\n@ä:ß=1\n@\xff:\xfe=1\n\x00@A:B=1\n  @A:B=1  \n@A:B\r=1"))
 	f.Add([]byte(""))
 	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > maxFuzzInput {
+			return
+		}
 		set, err := parseTranscript(writeFuzzFile(t, data))
 		if err != nil {
-			// A regular file only fails to scan on an over-long line.
-			if !errors.Is(err, bufio.ErrTooLong) {
-				t.Fatalf("parseTranscript(%q): %v", data, err)
-			}
-			return
+			t.Fatalf("parseTranscript(%q): %v", data, err)
 		}
 		for k := range set {
 			su, fn := splitSubunitFunc(k)
@@ -486,6 +500,7 @@ func FuzzParseTranscript(f *testing.F) {
 }
 
 func FuzzDumpTranscript(f *testing.F) {
+	writeFuzzFile := fuzzFileWriter(f)
 	for _, c := range [][2]string{
 		{"@MAIN:PWR=?", "@MAIN:PWR=On"},
 		{"@ZONE9:PWR=?", "@UNDEFINED"},
@@ -501,17 +516,14 @@ func FuzzDumpTranscript(f *testing.F) {
 	f.Fuzz(func(t *testing.T, request, reply string) {
 		// Requests come from a line-scanned file or the built-in catalog,
 		// and splitCRLF never yields a reply containing "\r\n".
-		if strings.Contains(request, "\n") || strings.Contains(reply, "\r\n") {
+		if strings.Contains(request, "\n") || strings.Contains(reply, "\r\n") || len(request)+len(reply) > maxFuzzInput {
 			return
 		}
 		var buf bytes.Buffer
 		writeDumpReplies(&buf, request, []string{reply})
 		set, err := parseTranscript(writeFuzzFile(t, buf.Bytes()))
 		if err != nil {
-			if !errors.Is(err, bufio.ErrTooLong) {
-				t.Fatalf("parseTranscript of dump %q: %v", buf.Bytes(), err)
-			}
-			return
+			t.Fatalf("parseTranscript of dump %q: %v", buf.Bytes(), err)
 		}
 		// One reply reports at most one function, and a rejected one none.
 		rejected := strings.HasPrefix(reply, "@UNDEFINED") || strings.HasPrefix(reply, "@RESTRICTED")
@@ -522,16 +534,18 @@ func FuzzDumpTranscript(f *testing.F) {
 }
 
 func FuzzLoadDumpCommands(f *testing.F) {
+	writeFuzzFile := fuzzFileWriter(f)
 	f.Add([]byte("# scoped dump\n@MAIN:PWR=?\n\n  @MAIN:VOL=?  \r\n@TUN:BAND=?"))
 	f.Add([]byte("# only comments\n\n   \n#@MAIN:PWR=?\n"))
 	f.Add([]byte(""))
 	f.Add([]byte("@A\x00B=?\n\xff\xfe\n\t#x\n@A:B=?\r@C:D=?"))
 	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > maxFuzzInput {
+			return
+		}
 		cmds, err := loadDumpCommands(writeFuzzFile(t, data))
 		if err != nil {
-			if !errors.Is(err, bufio.ErrTooLong) {
-				requireUsageError(t, err, fmt.Sprintf("loadDumpCommands(%q)", data))
-			}
+			requireUsageError(t, err, fmt.Sprintf("loadDumpCommands(%q)", data))
 			return
 		}
 		if len(cmds) == 0 {
