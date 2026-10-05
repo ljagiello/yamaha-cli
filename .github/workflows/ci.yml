@@ -82,9 +82,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Fuzz on the latest stable Go: Go 1.26 can report the -fuzztime
+      # deadline expiring as a failure (go.dev/issue/75804). Tests and
+      # builds stay on go.mod's version.
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
           check-latest: true
           cache: true
 
