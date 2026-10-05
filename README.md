@@ -20,8 +20,7 @@ Covers power, volume, mute, input, sound program, surround decoder, scene, tone,
 - [DHCP resilience](#dhcp-resilience)
 - [Debugging](#debugging)
 - [Security note](#security-note)
-- [Run with Friday](#run-with-friday)
-- [Roadmap](#roadmap)
+- [Agent Skill](#agent-skill)
 - [Releasing](#releasing)
 - [Contributing & License](#contributing--license)
 
@@ -472,9 +471,9 @@ Practical implications:
 - The CLI has no credentials to manage and writes none to disk.
 - Don't port-forward port 80 (or TCP/50000 for YNCA) of the receiver to the public internet.
 
-## Run with Friday
+## Agent Skill
 
-This repo ships an [Agent Skill](https://agentskills.io/specification) at `skills/yamaha-receiver-control/` so AI agents can drive `yamaha` without re-deriving its surface from `--help`. Drop it into [Friday Studio](https://hellofriday.ai/) — the shareable AI workspace runtime from [Tempest Labs](https://hellofriday.ai/) — to get scheduling, signals, MCP tools, and memory on top of the CLI. Everything runs locally; your data stays on your machine; every step is logged.
+This repo ships an [Agent Skill](https://agentskills.io/specification) at `skills/yamaha-receiver-control/` so AI agents can drive `yamaha` without re-deriving its surface from `--help`.
 
 **Layout** (per the [agentskills.io specification](https://agentskills.io/specification)):
 
@@ -492,27 +491,9 @@ skills/yamaha-receiver-control/
 npx skills add ljagiello/yamaha-cli/skills/yamaha-receiver-control
 ```
 
-**Or in Friday Studio:**
-
-1. Install Friday from [hellofriday.ai](https://hellofriday.ai/) (macOS).
-2. Open **Skills** in the Studio sidebar and click **+ Add**.
-3. Add by reference: `ljagiello/yamaha-cli/skills/yamaha-receiver-control`.
-4. Reference it from any `workspace.yml`, or let agents load it automatically based on the skill's description.
-
-See the [Friday Skills docs](https://docs.hellofriday.ai/core-concepts/skills) for the full workflow, and the [Friday blog](https://blog.hellofriday.ai/) for the philosophy.
-
 After install, ask the agent in plain English (`"turn the receiver on and switch to HDMI 2"`, `"what's the volume in dB?"`, `"discover the Yamaha on my LAN and save it as 'living-room'"`) — it'll pick up the skill from the description and shell out to `yamaha` with the right flags. Progressive disclosure means the metadata is ~100 tokens at startup; `SKILL.md` loads only when the skill activates; `references/*.md` only when the agent navigates to them.
 
 **Prerequisite:** the agent's host needs the `yamaha` binary on `PATH` (`go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest`, `@vX.Y.Z` to pin a version, or a prebuilt binary from [Releases](https://github.com/ljagiello/yamaha-cli/releases) — see [Install](#install)) and LAN access to the receiver — same as a human user.
-
-## Roadmap
-
-The Phase 1 / 2 / 3 surface (every command in this README) is implemented and verified against an RX-V583. The original "184 bonus endpoints" from the YXC public spec — party mode, YPAO, Bluetooth pairing, MusicCast playlists, surround pairing, Cinema-Caster, alarms, Sonos integration — are reachable through `yamaha raw <method>` without further code.
-
-What's still on the table:
-
-- Typed wrappers for the bonus endpoints (`yamaha bluetooth list`, `yamaha ypao status`, etc.) where there's a concrete use case.
-- Live integration tests against non-RX-V receivers.
 
 ## Releasing
 
