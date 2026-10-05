@@ -159,8 +159,22 @@ func loadDumpCommands(path string) ([]string, error) {
 		return nil, fmt.Errorf("ynca dump: open %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
+	cmds, err := scanDumpCommands(f)
+	if err != nil {
+		return nil, fmt.Errorf("ynca dump: read %s: %w", path, err)
+	}
+	if len(cmds) == 0 {
+		return nil, newUsageError("ynca dump: %s contained no commands", path)
+	}
+	return cmds, nil
+}
+
+// scanDumpCommands returns r's lines, trimmed, minus blanks and '#'
+// comments. Split out of loadDumpCommands so it can be fuzzed without file
+// I/O.
+func scanDumpCommands(r io.Reader) ([]string, error) {
 	var cmds []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -168,13 +182,7 @@ func loadDumpCommands(path string) ([]string, error) {
 		}
 		cmds = append(cmds, line)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("ynca dump: read %s: %w", path, err)
-	}
-	if len(cmds) == 0 {
-		return nil, newUsageError("ynca dump: %s contained no commands", path)
-	}
-	return cmds, nil
+	return cmds, sc.Err()
 }
 
 // defaultDumpCommands assembles the built-in GET catalog from the function
