@@ -64,7 +64,7 @@ func (c *Client) GetFMFreq(ctx context.Context) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	f, perr := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	f, perr := parseNumber(v)
 	if perr != nil {
 		return 0, fmt.Errorf("ynca: unparseable FM frequency %q: %w", v, perr)
 	}
@@ -130,7 +130,7 @@ func (c *Client) GetTunerStatus(ctx context.Context) (*TunerStatus, error) {
 	case BandFM:
 		if v, e := c.get(ctx, SubunitTuner, FuncFMFreq); e == nil {
 			st.Raw[FuncFMFreq] = v
-			if f, pe := strconv.ParseFloat(strings.TrimSpace(v), 64); pe == nil {
+			if f, pe := parseNumber(v); pe == nil {
 				st.FreqMHz = f
 			}
 		}
@@ -156,6 +156,12 @@ func (c *Client) GetRDSInfo(ctx context.Context) (*RDSInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeRDSInfo(lines), nil
+}
+
+// decodeRDSInfo assembles an RDSInfo from an RDSINFO fan-out's report
+// lines, skipping malformed lines and lines for any subunit other than TUN.
+func decodeRDSInfo(lines []string) *RDSInfo {
 	info := &RDSInfo{Raw: make(map[string]string, len(lines))}
 	for _, ln := range lines {
 		su, fn, val, perr := parseLine(ln)
@@ -174,5 +180,5 @@ func (c *Client) GetRDSInfo(ctx context.Context) (*RDSInfo, error) {
 			info.RadioTextB = val
 		}
 	}
-	return info, nil
+	return info
 }
