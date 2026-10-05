@@ -1,8 +1,10 @@
 package ynca
 
 import (
+	"errors"
 	"math"
 	"strconv"
+	"strings"
 )
 
 // This file holds the numeric value codec shared by every YNCA function
@@ -39,6 +41,19 @@ func formatStepped(value float64, decimals int, step float64) string {
 		rounded = 0 // collapse a possible -0.0 so we never emit "-0.0"
 	}
 	return strconv.FormatFloat(rounded, 'f', decimals, 64)
+}
+
+// parseNumber decodes a stepped-number wire value (volume/tone dB, FM MHz)
+// as reported by the receiver, tolerating surrounding whitespace. It is the
+// read-side counterpart of formatStepped. ParseFloat also accepts NaN and
+// ±Inf spellings, which no dB or MHz reading can be (and which JSON output
+// cannot encode), so those are rejected like any other unparseable value.
+func parseNumber(v string) (float64, error) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	if err == nil && (math.IsNaN(f) || math.IsInf(f, 0)) {
+		return 0, errors.New("not a finite number")
+	}
+	return f, err
 }
 
 // formatVolume renders a dB value onto the YNCA volume grid: rounded to the

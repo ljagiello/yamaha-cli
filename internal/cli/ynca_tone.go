@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -76,13 +77,12 @@ func newYncaToneCmd() *cobra.Command {
 				return newUsageError("invalid tone channel %q (want bass|treble|reset)", args[0])
 			}
 
-			// Parse a signed dB value. strconv.ParseFloat rejects a leading
-			// "+", so strip it first (matching the YXC twin's parseSignedInt
-			// intent for the float grid SetTone rounds onto). No range check:
-			// the device clamps/rejects per its own model-specific bounds.
+			// Parse a signed dB value; strconv.ParseFloat accepts one leading
+			// sign, so "+3" works and "+-3" is rejected. No range check: the
+			// device clamps/rejects per its own model-specific bounds.
 			rawVal := strings.TrimSpace(args[1])
-			db, perr := strconv.ParseFloat(strings.TrimPrefix(rawVal, "+"), 64)
-			if perr != nil {
+			db, perr := strconv.ParseFloat(rawVal, 64)
+			if perr != nil || math.IsNaN(db) || math.IsInf(db, 0) {
 				return newUsageError("invalid tone value %q (want a dB number in the device's tone range)", rawVal)
 			}
 

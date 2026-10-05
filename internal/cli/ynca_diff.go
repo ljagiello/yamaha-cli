@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -75,8 +76,18 @@ func parseTranscript(path string) (map[string]struct{}, error) {
 	}
 	defer func() { _ = f.Close() }()
 
+	set, err := scanTranscript(f)
+	if err != nil {
+		return nil, fmt.Errorf("ynca diff: read %s: %w", path, err)
+	}
+	return set, nil
+}
+
+// scanTranscript is parseTranscript's line scanner, split out so it can be
+// fuzzed without file I/O.
+func scanTranscript(r io.Reader) (map[string]struct{}, error) {
 	set := map[string]struct{}{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 4096), 256*1024)
 	for sc.Scan() {
 		// Tolerate leading junk and trailing quoting some logs add.
@@ -99,7 +110,7 @@ func parseTranscript(path string) (map[string]struct{}, error) {
 		set["@"+strings.ToUpper(su)+":"+strings.ToUpper(fn)] = struct{}{}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("ynca diff: read %s: %w", path, err)
+		return nil, err
 	}
 	return set, nil
 }

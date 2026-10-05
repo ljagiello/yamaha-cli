@@ -274,7 +274,7 @@ func newLinkInfoCmd() *cobra.Command {
 // loaded config.
 func resolveLinkPeers(s *state, leaderAlias string, followerAliases []string) (linkPeer, []linkPeer, error) {
 	if s.cfg == nil || len(s.cfg.Devices) == 0 {
-		return linkPeer{}, nil, newUsageError("link: requires a config file with named aliases (run `yamaha discover --add` first)")
+		return linkPeer{}, nil, newUsageError("link: requires a config file with named aliases (run `yamaha discover --add` or `yamaha config add <alias> --host <ip>` first)")
 	}
 	leader, err := buildLinkPeer(s, leaderAlias)
 	if err != nil {

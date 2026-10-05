@@ -72,7 +72,10 @@ func newTunerFMCmd() *cobra.Command {
 			raw := strings.TrimSpace(args[0])
 
 			mhz, err := strconv.ParseFloat(raw, 64)
-			if err != nil {
+			// NaN, ±Inf and huge values have no int kHz: converting them
+			// is platform-dependent, and a device that reports no fm_freq
+			// range would be sent the result.
+			if err != nil || math.IsNaN(mhz) || math.Abs(mhz*1000) > math.MaxInt32 {
 				return newUsageError("invalid FM frequency %q (want MHz, e.g. 102.5)", raw)
 			}
 			// Convert MHz → kHz wire units (102.5 MHz → 102500). Verified

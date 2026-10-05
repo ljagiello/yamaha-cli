@@ -41,7 +41,7 @@ func (c *Client) GetTone(ctx context.Context, subunit, function string) (float64
 	if err != nil {
 		return 0, err
 	}
-	db, perr := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	db, perr := parseNumber(v)
 	if perr != nil {
 		return 0, fmt.Errorf("ynca: unparseable tone %q: %w", v, perr)
 	}
@@ -133,6 +133,13 @@ func (c *Client) GetSceneNames(ctx context.Context, subunit string) ([]SceneName
 	if err != nil {
 		return nil, err
 	}
+	return decodeSceneNames(subunit, lines), nil
+}
+
+// decodeSceneNames collects the SCENE<n>NAME report lines for subunit from
+// a SCENENAME fan-out, ordered by scene number, skipping malformed lines,
+// other subunits, and non-scene functions.
+func decodeSceneNames(subunit string, lines []string) []SceneName {
 	var names []SceneName
 	for _, ln := range lines {
 		su, fn, val, perr := parseLine(ln)
@@ -144,7 +151,7 @@ func (c *Client) GetSceneNames(ctx context.Context, subunit string) ([]SceneName
 		}
 	}
 	sort.Slice(names, func(i, j int) bool { return names[i].Num < names[j].Num })
-	return names, nil
+	return names
 }
 
 // sceneNameIndex extracts the scene number from a "SCENE<n>NAME" function

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -110,7 +111,7 @@ func newYncaTunerFMCmd() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			mhz, err := strconv.ParseFloat(strings.TrimSpace(args[0]), 64)
-			if err != nil {
+			if err != nil || math.IsNaN(mhz) || math.IsInf(mhz, 0) {
 				return newUsageError("invalid FM frequency %q (want MHz, e.g. 98.5)", args[0])
 			}
 			if err := runYNCASet(ctx, s, "@"+ynca.SubunitTuner+":"+ynca.FuncFMFreq, func(c *ynca.Client) error {

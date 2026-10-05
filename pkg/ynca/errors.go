@@ -72,6 +72,12 @@ func (e *ErrRestricted) Error() string {
 // reply line within the configured timeout.
 var ErrNoReply = errors.New("ynca: no reply within timeout")
 
+// ErrTooManyLines is returned by SendMulti when the receiver sends more
+// report lines than any real fan-out produces (maxMultiLines) without
+// echoing the @SYS:VERSION fence. The reply is rejected rather than
+// truncated, and the connection is reset.
+var ErrTooManyLines = fmt.Errorf("ynca: reply exceeded %d lines before the @SYS:VERSION fence", maxMultiLines)
+
 // ErrUnsupported is returned by Probe when the receiver is reachable
 // on TCP/50000 but does not speak YNCA.
 var ErrUnsupported = errors.New("ynca: device does not support YNCA")
@@ -80,8 +86,8 @@ var ErrUnsupported = errors.New("ynca: device does not support YNCA")
 // dial timeouts, connection refused, EOF on a stale conn, etc. It
 // returns false for application-level outcomes (ErrUndefinedCommand,
 // ErrRestricted, ProtocolError), for "reached but wrong protocol"
-// (ErrUnsupported), for "no reply within timeout" (ErrNoReply), and
-// for context cancellation. The CLI uses this to decide whether to
+// (ErrUnsupported), for "no reply within timeout" (ErrNoReply), for an
+// oversized fan-out (ErrTooManyLines), and for context cancellation. The CLI uses this to decide whether to
 // trigger DHCP rediscovery.
 func IsTransport(err error) bool {
 	if err == nil {
@@ -111,7 +117,7 @@ func IsTransport(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrNoReply) {
+	if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrNoReply) || errors.Is(err, ErrTooManyLines) {
 		return false
 	}
 	var und *ErrUndefinedCommand

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -106,6 +108,85 @@ func TestRunVolume_PlusFiveOneRequest(t *testing.T) {
 	// sorts keys: step=5&volume=up.
 	if gotQuery != "step=5&volume=up" {
 		t.Errorf("setVolume query: got %q, want %q", gotQuery, "step=5&volume=up")
+	}
+}
+
+// TestRunVolume_NegativeDBAfterTerminator runs the README's negative dB
+// form, `volume --db -- -22.5`, through cobra's argument parsing: the
+// value after `--` is an absolute -22.5 dB (wire 116 on the fallback
+// -80.5 dB / 0.5 dB scale), not a delta.
+func TestRunVolume_NegativeDBAfterTerminator(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DECAFE03"
+
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/system/getDeviceInfo"):
+			_, _ = w.Write([]byte(`{"response_code":0,"device_id":"` + deviceID + `","model_name":"RX-V583"}`))
+		case strings.HasSuffix(r.URL.Path, "/main/setVolume"):
+			gotQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newVolumeCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, newVolumeTestState(t, srv, deviceID))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetArgs([]string{"--db", "--", "-22.5"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("volume --db -- -22.5: %v", err)
+	}
+	if gotQuery != "volume=116" {
+		t.Errorf("setVolume query: got %q, want %q", gotQuery, "volume=116")
+	}
+}
+
+// TestParseVolumeArg_PercentExtremeRange maps --percent onto a device
+// volume range as wide as int itself (range_step saturates to
+// math.MinInt..math.MaxInt), where max-min overflows int and float64(max)
+// is 2^63, which has no int conversion.
+func TestParseVolumeArg_PercentExtremeRange(t *testing.T) {
+	resetFeatureLoader(t)
+
+	for _, tc := range []struct {
+		min, max float64
+		raw      string
+		want     int
+	}{
+		{-1e19, 1e19, "0", math.MinInt},
+		{-1e19, 1e19, "50", 0},
+		{-1e19, 1e19, "100", math.MaxInt},
+		{0, 1e19, "100", math.MaxInt},
+	} {
+		feats := volumeFeatures()
+		feats.Zone[0].RangeStep = []yxc.RangeStep{{ID: "volume", Min: tc.min, Max: tc.max, Step: 1}}
+		fl = &featureLoader{deviceID: "EXTREME", feats: feats}
+
+		rec := &wireRecorder{}
+		c, err := yxc.New("192.0.2.1", yxc.WithHTTPClient(&http.Client{Transport: rec}))
+		if err != nil {
+			t.Fatalf("yxc.New: %v", err)
+		}
+		arg, err := parseVolumeArg(&state{zone: "main", client: c}, context.Background(), tc.raw, false, true, 0)
+		if err != nil {
+			t.Fatalf("range [%g, %g], %s --percent: %v", tc.min, tc.max, tc.raw, err)
+		}
+		if err := c.SetVolume(context.Background(), "main", arg); err != nil {
+			t.Fatalf("SetVolume: %v", err)
+		}
+		if got, want := rec.req.URL.Query().Get("volume"), strconv.Itoa(tc.want); got != want {
+			t.Errorf("range [%g, %g], %s --percent: sent volume=%s, want %s", tc.min, tc.max, tc.raw, got, want)
+		}
 	}
 }
 

@@ -1,6 +1,9 @@
 package yxc
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // This file gives the small, closed sets of *received* YXC state values a
 // named Go type each, instead of leaving them as bare strings compared
@@ -172,10 +175,14 @@ func (b Band) Known() bool { return b == BandFM || b == BandAM || b == BandDAB }
 
 // playTimeToDuration converts a YXC `play_time`/`total_time` value (whole
 // seconds) into a time.Duration. Negative sentinels some inputs report
-// (e.g. -60 while buffering) are clamped to 0.
+// (e.g. -60 while buffering) are clamped to 0; values too large for a
+// Duration saturate instead of wrapping negative.
 func playTimeToDuration(seconds int) time.Duration {
 	if seconds < 0 {
 		return 0
+	}
+	if time.Duration(seconds) > math.MaxInt64/time.Second {
+		return math.MaxInt64
 	}
 	return time.Duration(seconds) * time.Second
 }

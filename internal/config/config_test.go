@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -145,6 +146,38 @@ func TestSaveAtomicLeavesOriginalIntactOnFailure(t *testing.T) {
 	// Sanity: the original we read earlier really was the seeded version.
 	if !strings.Contains(string(originalRaw), "living-room") {
 		t.Errorf("original file did not contain seed content: %s", originalRaw)
+	}
+}
+
+// TestSaveRefusesConfigThatWouldNotLoadBack covers strings yaml.v3
+// writes but cannot read back as written. Saving one would leave a file
+// that Load rejects (every command then fails) or that loads changed.
+func TestSaveRefusesConfigThatWouldNotLoadBack(t *testing.T) {
+	tests := []struct {
+		name  string
+		alias string
+		dev   Device
+	}{
+		{"merge-key alias", "<<", Device{Host: "192.0.2.1"}},
+		{"leading tab-only line", "living-room", Device{Host: "192.0.2.1", DeviceID: "\t\nx"}},
+		{"lone newline", "living-room", Device{Host: "192.0.2.1", DeviceID: "\n"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			prev := []byte("default_device: previous\n")
+			if err := os.WriteFile(path, prev, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := saveTo(path, &Config{Devices: map[string]Device{tt.alias: tt.dev}})
+			if err == nil {
+				data, _ := os.ReadFile(path)
+				t.Fatalf("saveTo succeeded and wrote:\n%s", data)
+			}
+			if got, _ := os.ReadFile(path); !bytes.Equal(got, prev) {
+				t.Errorf("refused save changed the file to:\n%s", got)
+			}
+		})
 	}
 }
 

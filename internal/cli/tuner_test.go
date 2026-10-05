@@ -156,30 +156,32 @@ func TestRunTunerFM_OutOfRangeRejected(t *testing.T) {
 }
 
 // TestRunTunerFM_MalformedRejected covers the parsing branch — a non-numeric
-// argument fails as a usage error before any device call.
+// or non-finite argument fails as a usage error before any device call.
+// NaN, ±Inf and huge values have no int kHz: converting them is
+// platform-dependent, and a device that reports no fm_freq range would be
+// sent the result.
 func TestRunTunerFM_MalformedRejected(t *testing.T) {
 	resetFeatureLoader(t)
 	redirectCacheDir(t)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("unexpected wire call on malformed input")
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected wire call %s on malformed input", r.URL.Path)
 	}))
 	defer srv.Close()
 
 	s := newTunerTestState(t, srv, "00A0DEMALFORM")
-	cmd := newTunerFMCmd()
-	cmd.SetContext(context.Background())
-	setStateOnCmd(cmd, s)
-	cmd.SetOut(&strings.Builder{})
-	cmd.SetErr(&strings.Builder{})
+	for _, raw := range []string{"not-a-number", "nan", "NaN", "inf", "-Inf", "1e400", "1e300"} {
+		cmd := newTunerFMCmd()
+		cmd.SetContext(context.Background())
+		setStateOnCmd(cmd, s)
+		cmd.SetOut(&strings.Builder{})
+		cmd.SetErr(&strings.Builder{})
 
-	err := cmd.RunE(cmd, []string{"not-a-number"})
-	if err == nil {
-		t.Fatal("expected usage error, got nil")
-	}
-	var uerr *usageError
-	if !errors.As(err, &uerr) {
-		t.Fatalf("expected *usageError, got %T (%v)", err, err)
+		err := cmd.RunE(cmd, []string{raw})
+		var uerr *usageError
+		if !errors.As(err, &uerr) || ErrorExitCode(err) != 2 {
+			t.Errorf("tuner fm %s: got %T (%v), want a usage error (exit 2)", raw, err, err)
+		}
 	}
 }
 

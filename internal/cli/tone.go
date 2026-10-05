@@ -96,9 +96,10 @@ func newToneCmd() *cobra.Command {
 	}
 }
 
-// parseSignedInt accepts a leading + sign (strconv.Atoi rejects "+3").
+// parseSignedInt parses a tone value such as "+3" or "-3". strconv.Atoi
+// already accepts one leading sign; stripping a "+" first would let a
+// doubled sign like "+-3" through.
 func parseSignedInt(raw string) (int, error) {
-	raw = strings.TrimPrefix(raw, "+")
 	return strconv.Atoi(raw)
 }
 

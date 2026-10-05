@@ -10,7 +10,7 @@ The CLI uses Go's `os.UserConfigDir()`:
 | macOS | `~/Library/Application Support/yamaha-cli/config.yaml` |
 | Windows | `%AppData%\yamaha-cli\config.yaml` |
 
-Run `yamaha config path` to print the resolved path. All writes (wizard, `discover --add`, DHCP-resilience updates) go through `<file>.tmp` + `os.Rename` for atomicity.
+Run `yamaha config path` to print the resolved path. All writes (wizard, `discover --add`, `config add`, DHCP-resilience updates) go through `<file>.tmp` + `os.Rename` for atomicity.
 
 ## Schema
 
@@ -21,7 +21,7 @@ devices:
   living-room:
     host: 192.168.1.116
     udn: uuid:9ab0c000-f668-11de-9976-00a0defbe863    # auto-saved on discovery
-    default_zone: main                                 # main | zone2
+    default_zone: main                                 # main | zone2 | zone3 | zone4
   bedroom:
     host: 192.168.1.118
     udn: uuid:9ab0c000-f668-11de-9976-00a0defaa111
@@ -30,22 +30,35 @@ devices:
 
 - `default_device` (string, required when ≥2 devices): alias used when no flag/env overrides.
 - `devices.<alias>.host` (string, required): IP or hostname of the receiver (no scheme, no port).
-- `devices.<alias>.udn` (string, optional but recommended): UPnP UDN. Required for DHCP-resilience.
-- `devices.<alias>.default_zone` (string, optional): `main` or `zone2`. Falls back to `main`.
+- `devices.<alias>.udn` (string, optional but recommended): UPnP UDN. Required for DHCP-resilience. Saved by the wizard, `discover --add`, and `config add` (when its probe reaches the receiver).
+- `devices.<alias>.default_zone` (string, optional): `main`, `zone2`, `zone3`, or `zone4`. Falls back to `main`.
 
 ## Resolution order (active device)
 
 Highest priority wins. Flag/env pairs are adjacent.
 
-1. `--host <ip>` flag → **anonymous** (no alias, no UDN, no DHCP-resilience).
+1. `--host <ip>` flag → **anonymous** (no alias, no UDN, no DHCP-resilience). Skips the config: never triggers the first-run flow, saves nothing.
 2. `YAMAHA_HOST` env → same as above.
 3. `--device <alias>` flag → look up in `devices`.
 4. `YAMAHA_DEVICE` env → look up in `devices`.
 5. `default_device` from config.
 6. **Single-device shortcut**: if exactly one entry exists in `devices`, use it (regardless of `default_device`).
 7. None of the above → trigger first-run flow:
-   - **Interactive (TTY)**: SSDP scan → prompt to pick → prompt for alias → save → re-run command transparently. Zero-found exits **69**.
-   - **Non-interactive**: exit **64** with `no device configured; run 'yamaha discover' or pass --host`.
+   - **Interactive (stdin and stdout are a TTY)**: SSDP scan → prompt to pick → prompt for alias → save → re-run command transparently. Zero-found exits **69**.
+   - **Non-interactive**: exit **64** with `no device configured; run 'yamaha discover --add' or 'yamaha config add <alias> --host <ip>', or pass --host`.
+
+## Saving a device
+
+A receiver command run with `--host` / `YAMAHA_HOST` never writes the config. To persist a receiver:
+
+| Way | Needs | UDN saved |
+|---|---|---|
+| First-run wizard (any receiver command, nothing resolved) | TTY + SSDP multicast | Yes |
+| `yamaha discover --add` | TTY + SSDP multicast | Yes |
+| `yamaha config add <alias> --host <ip>` | The IP; no TTY, no multicast | Yes if the probe reaches the receiver; else a `warning:` and no UDN. A non-Yamaha device at that address: nothing saved (exit 1) |
+| Hand-edit the file at `yamaha config path` | — | Only if you add it |
+
+`config add` is the non-interactive path (scripts, agents). Flags and exit codes: [COMMANDS.md](COMMANDS.md#subcommands).
 
 ## DHCP resilience
 
@@ -61,7 +74,7 @@ When the active device was config-resolved (alias != "") AND has a saved UDN:
 
 **Skipped when:**
 - Active device is `--host` / `YAMAHA_HOST` (anonymous).
-- Config entry has no UDN (pre-v5 manual entry). Re-run `yamaha discover --add` to refresh.
+- Config entry has no UDN (pre-v5 manual entry, or `config add` couldn't probe the receiver). Re-run `yamaha discover --add` or `yamaha config add <alias> --host <ip> --force` to refresh.
 
 ## Environment variables
 
@@ -69,7 +82,7 @@ When the active device was config-resolved (alias != "") AND has a saved UDN:
 |---|---|---|
 | `YAMAHA_HOST` | `--host` | Anonymous mode; skips DHCP-resilience. |
 | `YAMAHA_DEVICE` | `--device` | Alias must exist in config. |
-| `YAMAHA_ZONE` | `--zone` | `main` or `zone2`. |
+| `YAMAHA_ZONE` | `--zone` | `main`, `zone2`, `zone3`, or `zone4`. |
 | `YAMAHA_DEBUG` | `--debug` | Truthy: `1`, `true`, `yes`, `on` (case-insensitive). |
 | `NO_COLOR` | `--no-color` | Any non-empty value disables ANSI color. Per [no-color.org](https://no-color.org). |
 

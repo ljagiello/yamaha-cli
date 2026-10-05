@@ -3,7 +3,6 @@ package ynca
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -136,7 +135,7 @@ func (c *Client) GetVolume(ctx context.Context, subunit string) (float64, error)
 	if err != nil {
 		return 0, err
 	}
-	db, perr := strconv.ParseFloat(strings.TrimSpace(v), 64)
+	db, perr := parseNumber(v)
 	if perr != nil {
 		return 0, fmt.Errorf("ynca: unparseable volume %q: %w", v, perr)
 	}
@@ -214,7 +213,7 @@ type Status struct {
 	Subunit   string
 	Power     Power
 	Volume    float64
-	VolumeRaw string // raw wire value; "" means VOL was not reported
+	VolumeRaw string // raw wire value behind Volume; "" means no parseable VOL (Raw keeps an unparseable one)
 	Mute      bool   // convenience: MuteState.Muted()
 	MuteState Mute   // precise state, incl. attenuation levels
 	Input     string
@@ -234,6 +233,12 @@ func (c *Client) GetStatus(ctx context.Context, subunit string) (*Status, error)
 	if err != nil {
 		return nil, err
 	}
+	return decodeStatus(subunit, lines), nil
+}
+
+// decodeStatus assembles a Status from a BASIC fan-out's report lines,
+// skipping malformed lines and lines for any other subunit.
+func decodeStatus(subunit string, lines []string) *Status {
 	st := &Status{
 		Subunit:   subunit,
 		Power:     PowerUnknown,
@@ -250,9 +255,9 @@ func (c *Client) GetStatus(ctx context.Context, subunit string) (*Status, error)
 		case "PWR":
 			st.Power = ParsePowerState(val)
 		case "VOL":
-			st.VolumeRaw = val
-			if db, e := strconv.ParseFloat(strings.TrimSpace(val), 64); e == nil {
+			if db, e := parseNumber(val); e == nil {
 				st.Volume = db
+				st.VolumeRaw = val
 			}
 		case "MUTE":
 			st.MuteState = ParseMute(val)
@@ -263,5 +268,5 @@ func (c *Client) GetStatus(ctx context.Context, subunit string) (*Status, error)
 			st.SoundPrg = val
 		}
 	}
-	return st, nil
+	return st
 }

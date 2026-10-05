@@ -6,7 +6,7 @@ All commands accept the global flags below. Run `yamaha <cmd> --help` for cobra'
 
 | Flag | Env | Effect |
 |---|---|---|
-| `--host <ip>` | `YAMAHA_HOST` | Bypass config; talk to this IP directly. Anonymous (no DHCP-resilience). |
+| `--host <ip>` | `YAMAHA_HOST` | Bypass config; talk to this IP directly. Anonymous (no DHCP-resilience). For `config add`, the host to save. |
 | `--device <alias>` | `YAMAHA_DEVICE` | Use the named device from config. |
 | `--zone <main\|zone2\|zone3\|zone4>` | `YAMAHA_ZONE` | Override the zone for zone-scoped commands. Default: device's `default_zone`, else `main`. Any of the four canonical zones is accepted; the receiver rejects a zone it lacks (exit 70). |
 | `-o, --output <fmt>` | — | `auto` (default), `json`, `yaml`, `table`. `auto` = table on TTY, JSON when piped. |
@@ -52,6 +52,7 @@ All commands accept the global flags below. Run `yamaha <cmd> --help` for cobra'
 | `ynca status\|power\|volume\|mute\|input\|sound` | yes (zone→subunit) | Typed YNCA control for YNCA-only receivers, acting on the `--zone`-mapped subunit (main→MAIN, …). `status` decodes one `@MAIN:BASIC=?` GET; `volume` takes absolute dB (pass negatives after `--`) or `up`/`down`. |
 | `ynca repl` | no | Interactive YNCA prompt over one persistent connection (one line per command; `exit`/`quit`/Ctrl-D to leave). |
 | `discover [--add]` | no | SSDP scan. Without `--add`: print found Yamaha devices. With `--add`: interactive prompt to save one to config (wizards through pick + alias). |
+| `config add <alias> [--host <ip>] [--default-zone main\|zone2\|zone3\|zone4] [--set-default] [--force]` | no | Save a receiver whose address you already know. Non-interactive: no TTY, no SSDP multicast, no existing config file needed. Host comes from `--host`, else `YAMAHA_HOST`; it must be an IPv4 address or hostname (no scheme, port, or path). Probes that host's UPnP description (unicast SSDP, then `http://<host>:49154/MediaRenderer/desc.xml`) to save its UDN for DHCP-resilience; if the probe fails it prints a `warning:` and saves the entry without a UDN, unless the host answers as a non-Yamaha device (nothing saved). `--default-zone` defaults to `main`. The alias becomes `default_device` if none is set yet, or with `--set-default`. Prints `Saved <alias> → <host> (<path>)` to stderr; nothing on stdout. Exit 2 for an empty alias, a missing host, a host that isn't an IPv4 address or hostname, or an invalid `--default-zone`; exit 1 if the alias already exists (unless `--force` overwrites it), the host answers as a non-Yamaha device, or the config file cannot store the alias as written (such as `<<`, a YAML merge key; nothing is saved); Ctrl-C during the probe aborts without saving (exit 130). |
 | `config show` | no | Print resolved config (JSON/YAML/table per `--output`). |
 | `config path` | no | Print absolute config file path. |
 | `completion {bash\|zsh\|fish\|powershell}` | no | Emit shell completion script to stdout. |
@@ -66,7 +67,7 @@ The `volume` command takes one positional argument. Modifiers are mutually exclu
 | Absolute integer | `setVolume?volume=N` (clamped 0..max) | `volume 60` |
 | Signed delta | `setVolume?volume=up\|down&step=N` (single roundtrip, no GET-then-SET) | `volume +5`, `volume -- -3` |
 | Token | `setVolume?volume=up\|down` (default step) | `volume up`, `volume down --step 2` |
-| Decibels (absolute) | converts to integer via `getFeatures` range, sends absolute | `volume -22.5 --db` |
+| Decibels (absolute) | converts to integer via `getFeatures` range, sends absolute | `volume --db -- -22.5` |
 | Percent (absolute) | scales 0..100 to 0..max, sends absolute | `volume 50 --percent` |
 
 Errors:

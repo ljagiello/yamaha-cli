@@ -45,6 +45,87 @@ jobs:
       - name: go build
         run: go build ./...
 
+  fuzz-packages:
+    name: fuzz packages
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.list.outputs.packages }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      # Every package with a Fuzz* function becomes one fuzz job, so new
+      # targets and packages need no edit here.
+      - name: list packages with fuzz targets
+        id: list
+        run: |
+          set -o pipefail
+          packages=$(go test -list '^Fuzz' -json ./... |
+            jq -s -c '[.[] | select(.Action == "output" and (.Output | startswith("Fuzz"))) | .Package] | unique')
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: fuzz (${{ matrix.package }})
+    needs: fuzz-packages
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.fuzz-packages.outputs.packages) }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fuzz on the latest stable Go: Go 1.26 can report the -fuzztime
+      # deadline expiring as a failure (go.dev/issue/75804). Tests and
+      # builds stay on go.mod's version.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+
+      # Go fuzzes one target per invocation, so every Fuzz* function in
+      # the package is listed and run in turn.
+      # -fuzzminimizetime=0: 30s runs keep no corpus, minimizing starves
+      # slow targets, and an unminimized crasher still reproduces.
+      - name: go test -fuzz
+        env:
+          PKG: ${{ matrix.package }}
+        run: |
+          failed=0
+          for target in $(go test -list '^Fuzz' "$PKG" | grep '^Fuzz'); do
+            echo "::group::$target"
+            if ! go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s -fuzzminimizetime=0 "$PKG"; then
+              echo "::error::$target failed in $PKG"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      # Artifact names can't contain '/', and each matrix job needs its own.
+      - name: crasher artifact name
+        id: artifact
+        if: failure()
+        env:
+          PKG: ${{ matrix.package }}
+        run: echo "name=fuzz-crashers-${PKG//\//-}" >> "$GITHUB_OUTPUT"
+
+      # A failing input is saved under the package's testdata/fuzz/<target>/.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: '**/testdata/fuzz/**'
+          if-no-files-found: ignore
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest

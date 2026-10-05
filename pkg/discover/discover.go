@@ -2,12 +2,14 @@ package discover
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	ssdp "github.com/koron/go-ssdp"
@@ -30,6 +32,11 @@ const mediaRendererST = "urn:schemas-upnp-org:device:MediaRenderer:1"
 // substring, to avoid accidentally swallowing other vendors that
 // reference Yamaha in their text.
 const yamahaManufacturer = "Yamaha Corporation"
+
+// ErrNotYamaha is wrapped by the error Describe returns when the host
+// answered with the description of another manufacturer's device: the
+// host is reachable, but it is not a Yamaha receiver.
+var ErrNotYamaha = errors.New("not a Yamaha receiver")
 
 // Device is a discovered Yamaha receiver.
 type Device struct {
@@ -250,8 +257,8 @@ func fetchAndFilter(ctx context.Context, locations []string, timeout time.Durati
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		dev, ok := fetchOne(ctx, client, loc)
-		if !ok {
+		dev, err := fetchOne(ctx, client, loc)
+		if err != nil {
 			continue
 		}
 		if _, dup := seen[dev.UDN]; dup {
@@ -263,36 +270,49 @@ func fetchAndFilter(ctx context.Context, locations []string, timeout time.Durati
 	return out, nil
 }
 
-// fetchOne resolves a single SSDP Location to a Device. Returns
-// (Device, false) on any error, on non-2xx HTTP status, on parse
-// failure, or when the description doesn't identify as Yamaha — the
-// caller skips the entry silently in those cases.
-func fetchOne(ctx context.Context, client *http.Client, location string) (Device, bool) {
+// fetchOne resolves a single SSDP Location to a Device. It returns an
+// error on any transport failure, on non-2xx HTTP status, on parse
+// failure, or when the description doesn't identify as a Yamaha receiver
+// with a UDN. fetchAndFilter skips such entries silently; Describe
+// surfaces the error so the user learns why a known host was rejected.
+func fetchOne(ctx context.Context, client *http.Client, location string) (Device, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
 	if err != nil {
-		return Device{}, false
+		return Device{}, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return Device{}, false
+		return Device{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Device{}, false
+		return Device{}, fmt.Errorf("GET %s: unexpected status %s", location, resp.Status)
 	}
 	desc, err := parseDescriptionXML(io.LimitReader(resp.Body, maxDescriptionBody))
 	if err != nil {
-		return Device{}, false
+		return Device{}, fmt.Errorf("%s: %w", location, err)
 	}
 	if desc.Manufacturer != yamahaManufacturer {
-		return Device{}, false
+		return Device{}, fmt.Errorf("%s: %w (manufacturer %q)", location, ErrNotYamaha, desc.Manufacturer)
 	}
 	if desc.UDN == "" {
-		return Device{}, false
+		return Device{}, fmt.Errorf("%s: description has no UDN", location)
 	}
+	return newDevice(location, desc)
+}
+
+// newDevice builds the Device for the Yamaha description desc served at
+// location. A host with ':' (IPv6) or '%' (an IPv6 zone, or a
+// %25-escaped name) is refused: unbracketed in BaseURL it is malformed,
+// and saved to the config it is a host neither yxc nor ynca (which reads
+// any ':' as a port separator) can use.
+func newDevice(location string, desc descDevice) (Device, error) {
 	host, err := hostFromLocation(location)
 	if err != nil {
-		return Device{}, false
+		return Device{}, err
+	}
+	if strings.ContainsAny(host, ":%") {
+		return Device{}, fmt.Errorf("%s: host %q is not supported (IPv6 or contains '%%')", location, host)
 	}
 	return Device{
 		Name:    desc.FriendlyName,
@@ -300,7 +320,7 @@ func fetchOne(ctx context.Context, client *http.Client, location string) (Device
 		Model:   desc.ModelName,
 		BaseURL: fmt.Sprintf("http://%s/YamahaExtendedControl/v1/", host),
 		UDN:     desc.UDN,
-	}, true
+	}, nil
 }
 
 // hostFromLocation strips the port and scheme from a Location URL,

@@ -112,6 +112,35 @@ func (c *Client) GetNowPlaying(ctx context.Context, subunit string) (*NowPlaying
 	if err != nil {
 		return nil, err
 	}
+	np := decodeMetaInfo(subunit, lines)
+	// Best-effort extras: not all sources answer these, and an @UNDEFINED
+	// here leaves the connection open (it's an application reply, not a
+	// transport error), so the reads can share the one connection.
+	if v, e := c.get(ctx, subunit, FuncPlaybackInfo); e == nil {
+		np.PlaybackInfo = ParsePlaybackInfo(v)
+		np.Raw[FuncPlaybackInfo] = v
+	}
+	if np.Station == "" {
+		if v, e := c.get(ctx, subunit, "STATION"); e == nil && strings.TrimSpace(v) != "" {
+			np.Station = v
+			np.Raw["STATION"] = v
+		}
+	}
+	if v, e := c.get(ctx, subunit, "ELAPSEDTIME"); e == nil {
+		np.ElapsedRaw = v
+		np.Raw["ELAPSEDTIME"] = v
+	}
+	if v, e := c.get(ctx, subunit, "TOTALTIME"); e == nil {
+		np.TotalRaw = v
+		np.Raw["TOTALTIME"] = v
+	}
+	return np, nil
+}
+
+// decodeMetaInfo assembles a NowPlaying from a METAINFO fan-out's report
+// lines, skipping malformed lines and lines for any other subunit. The
+// transport state is left PlaybackInfoUnknown for GetNowPlaying to fill.
+func decodeMetaInfo(subunit string, lines []string) *NowPlaying {
 	np := &NowPlaying{
 		Subunit:      subunit,
 		PlaybackInfo: PlaybackInfoUnknown,
@@ -138,28 +167,7 @@ func (c *Client) GetNowPlaying(ctx context.Context, subunit string) (*NowPlaying
 			np.Station = val
 		}
 	}
-	// Best-effort extras: not all sources answer these, and an @UNDEFINED
-	// here leaves the connection open (it's an application reply, not a
-	// transport error), so the reads can share the one connection.
-	if v, e := c.get(ctx, subunit, FuncPlaybackInfo); e == nil {
-		np.PlaybackInfo = ParsePlaybackInfo(v)
-		np.Raw[FuncPlaybackInfo] = v
-	}
-	if np.Station == "" {
-		if v, e := c.get(ctx, subunit, "STATION"); e == nil && strings.TrimSpace(v) != "" {
-			np.Station = v
-			np.Raw["STATION"] = v
-		}
-	}
-	if v, e := c.get(ctx, subunit, "ELAPSEDTIME"); e == nil {
-		np.ElapsedRaw = v
-		np.Raw["ELAPSEDTIME"] = v
-	}
-	if v, e := c.get(ctx, subunit, "TOTALTIME"); e == nil {
-		np.TotalRaw = v
-		np.Raw["TOTALTIME"] = v
-	}
-	return np, nil
+	return np
 }
 
 // SetPlayback drives transport on a source subunit (@<SRC>:PLAYBACK=action).

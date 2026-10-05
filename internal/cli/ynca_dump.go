@@ -101,9 +101,10 @@ func runYncaDump(cmd *cobra.Command, _ []string) error {
 	for _, line := range commands {
 		lines, serr := c.SendMulti(ctx, line)
 		if serr != nil {
-			// A transport failure ends the dump; an application reply does
-			// not (SendMulti only errors on transport / no-reply). Record
-			// what happened and stop so the file isn't silently truncated.
+			// A transport failure or no-reply ends the dump; any other
+			// error (e.g. ynca.ErrTooManyLines for an oversized reply) is
+			// recorded and the dump moves on. Write the error first so a
+			// stopped dump isn't silently truncated.
 			fmt.Fprintf(bw, "# %s -> ERROR: %v\n", line, serr)
 			if ynca.IsTransport(serr) || errors.Is(serr, ynca.ErrNoReply) {
 				_ = bw.Flush()
@@ -133,6 +134,13 @@ func writeDumpReplies(w io.Writer, request string, lines []string) {
 		return
 	}
 	for _, ln := range lines {
+		if strings.Contains(ln, "\n") {
+			// splitCRLF frames replies on "\r\n", so a bare LF can survive
+			// inside one. Written verbatim it would become extra transcript
+			// lines; it isn't a valid report line, so quote it as a comment.
+			fmt.Fprintf(w, "# %s -> %q\n", request, ln)
+			continue
+		}
 		if strings.HasPrefix(ln, "@UNDEFINED") || strings.HasPrefix(ln, "@RESTRICTED") {
 			fmt.Fprintf(w, "# %s -> %s\n", request, ln)
 			continue
@@ -152,8 +160,22 @@ func loadDumpCommands(path string) ([]string, error) {
 		return nil, fmt.Errorf("ynca dump: open %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
+	cmds, err := scanDumpCommands(f)
+	if err != nil {
+		return nil, fmt.Errorf("ynca dump: read %s: %w", path, err)
+	}
+	if len(cmds) == 0 {
+		return nil, newUsageError("ynca dump: %s contained no commands", path)
+	}
+	return cmds, nil
+}
+
+// scanDumpCommands returns r's lines, trimmed, minus blanks and '#'
+// comments. Split out of loadDumpCommands so it can be fuzzed without file
+// I/O.
+func scanDumpCommands(r io.Reader) ([]string, error) {
 	var cmds []string
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -161,13 +183,7 @@ func loadDumpCommands(path string) ([]string, error) {
 		}
 		cmds = append(cmds, line)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("ynca dump: read %s: %w", path, err)
-	}
-	if len(cmds) == 0 {
-		return nil, newUsageError("ynca dump: %s contained no commands", path)
-	}
-	return cmds, nil
+	return cmds, sc.Err()
 }
 
 // defaultDumpCommands assembles the built-in GET catalog from the function
