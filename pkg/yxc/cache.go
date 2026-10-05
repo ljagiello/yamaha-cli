@@ -64,11 +64,18 @@ func (fc *FeaturesCache) pathFor(deviceID string) (string, error) {
 	if deviceID == "" {
 		return "", errors.New("yxc: cache: empty device ID")
 	}
+	// deviceID is the receiver-reported device_id, so it must stay a
+	// single file name: "../x" or "a/b" would let a hostile device steer
+	// the cache read, write and remove outside the cache directory.
+	name := deviceID + "-features.json"
+	if filepath.Base(name) != name {
+		return "", fmt.Errorf("yxc: cache: invalid device ID %q", deviceID)
+	}
 	d, err := fc.dir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(d, deviceID+"-features.json"), nil
+	return filepath.Join(d, name), nil
 }
 
 // FetchFunc is the signature of the callback supplied to LoadOrFetch.
