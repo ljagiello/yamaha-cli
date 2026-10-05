@@ -73,3 +73,7 @@ changelog:
 release:
   draft: false
   prerelease: auto
+
+# When vX.Y.Z and vX.Y.Z-rc.N tag the same commit, release vX.Y.Z.
+git:
+  prerelease_suffix: "-"

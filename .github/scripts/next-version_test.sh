@@ -62,6 +62,7 @@ check v0.11.0 minor v0.10.0 v0.9.0 -
 # A commit is released once; a prerelease tag on HEAD doesn't count.
 check fail patch v0.1.0
 check fail patch v0.1.0 foo,v0.2.0
+# GoReleaser then publishes v1.0.0, not the rc, via git.prerelease_suffix.
 check v1.0.0 major v0.9.9 v1.0.0-rc.1
 
 check fail bogus -
