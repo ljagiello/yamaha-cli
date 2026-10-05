@@ -238,6 +238,7 @@ func FuzzParseVolumeArg(f *testing.F) {
 		{"up", false, false, 0}, {"Down", false, false, 5}, {"UP", false, false, -1},
 		{"+5", false, false, 0}, {"-5", false, false, 0}, {"+5", false, false, 2}, {"+005", false, false, 0},
 		{"+9223372036854775807", false, false, 0}, {"+5", true, false, 0}, {"up", false, true, 0},
+		{"-0", false, false, 3}, {"-9223372036854775808", false, false, 0},
 		{"42", false, false, 0}, {"0", false, false, 0}, {"161", false, false, 0}, {"999", false, false, 0},
 		{"9223372036854775807", false, false, 0}, {"0x10", false, false, 0}, {" 5", false, false, 0},
 		{"0", true, false, 0}, {"16.5", true, false, 0}, {"1e3", true, false, 0}, {"1e400", true, false, 0},

@@ -82,6 +82,11 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 			return yxc.VolumeArg{}, newUsageError("invalid signed volume %q", raw)
 		}
 		step := absInt(n)
+		if step <= 0 {
+			// ±0 has no direction (a zero step would send "one device step
+			// up"), and absInt(math.MinInt) overflows to a negative step.
+			return yxc.VolumeArg{}, newUsageError("invalid signed volume %q (want a non-zero delta)", raw)
+		}
 		if stepFlag > 0 {
 			step = stepFlag
 		}
