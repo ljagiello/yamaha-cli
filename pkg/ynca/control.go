@@ -213,7 +213,7 @@ type Status struct {
 	Subunit   string
 	Power     Power
 	Volume    float64
-	VolumeRaw string // raw wire value; "" means VOL was not reported
+	VolumeRaw string // raw wire value behind Volume; "" means no parseable VOL (Raw keeps an unparseable one)
 	Mute      bool   // convenience: MuteState.Muted()
 	MuteState Mute   // precise state, incl. attenuation levels
 	Input     string
@@ -255,9 +255,9 @@ func decodeStatus(subunit string, lines []string) *Status {
 		case "PWR":
 			st.Power = ParsePowerState(val)
 		case "VOL":
-			st.VolumeRaw = val
 			if db, e := parseNumber(val); e == nil {
 				st.Volume = db
+				st.VolumeRaw = val
 			}
 		case "MUTE":
 			st.MuteState = ParseMute(val)
