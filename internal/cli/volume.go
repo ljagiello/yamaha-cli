@@ -72,8 +72,9 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		return yxc.VolumeDown(stepIfPositive(stepFlag)), nil
 	}
 
-	// Signed deltas: leading + or -.
-	if len(raw) > 1 && (raw[0] == '+' || raw[0] == '-') {
+	// Signed deltas: leading + or -. With --db a leading '-' is the sign of
+	// an absolute dB value (`volume --db -- -22.5`), not a delta.
+	if len(raw) > 1 && (raw[0] == '+' || (raw[0] == '-' && !dbFlag)) {
 		if dbFlag || percentFlag {
 			return yxc.VolumeArg{}, newUsageError("--db/--percent only apply to absolute values")
 		}
