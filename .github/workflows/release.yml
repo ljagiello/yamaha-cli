@@ -35,6 +35,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Download everything before the tag is pushed, so a network
+      # hiccup fails the run while the version is still unused.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - run: go mod download
+
       # A tag pushed with GITHUB_TOKEN starts no workflow run, so the
       # push-tag trigger above stays quiet and this run publishes it:
       # one release, never two.
@@ -60,16 +76,13 @@ jobs:
           git push origin "$tag"
           echo "Releasing $tag" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          check-latest: true
-          cache: true
-
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: ${{ inputs.dry-run && 'release --snapshot --clean' || 'release --clean' }}
+      - name: Release
         env:
+          DRY_RUN: ${{ inputs.dry-run }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "$DRY_RUN" = true ]; then
+            goreleaser release --snapshot --clean
+          else
+            goreleaser release --clean
+          fi
