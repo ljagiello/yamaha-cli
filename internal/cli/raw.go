@@ -70,22 +70,26 @@ func newRawCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			// Decode the JSON so the output renderer can format it via
-			// the user's chosen format. We don't care about the shape —
-			// any valid YXC reply is a JSON object.
-			var decoded any
-			if len(raw) == 0 {
-				decoded = map[string]any{}
-			} else if err := json.Unmarshal(raw, &decoded); err != nil {
-				// If the device returned non-JSON bytes (shouldn't happen
-				// in practice — Do already validated response_code on a
-				// JSON parse), surface them as a string.
-				decoded = string(raw)
-			}
-			return printResult(cmd, decoded)
+			return printResult(cmd, decodeRawReply(raw))
 		},
 	}
+}
+
+// decodeRawReply decodes the reply so the output renderer can format it via
+// the user's chosen format. We don't care about the shape — any valid YXC
+// reply is a JSON object.
+func decodeRawReply(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		// If the device returned non-JSON bytes (shouldn't happen in
+		// practice — Do already validated response_code on a JSON
+		// parse), surface them as a string.
+		return string(raw)
+	}
+	return decoded
 }
 
 // parseKVPairs converts positional "k=v" args into url.Values. Repeated
