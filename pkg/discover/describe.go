@@ -34,7 +34,8 @@ const describeFallbackPath = "/MediaRenderer/desc.xml"
 // half of timeout it falls back to the well-known Yamaha description URL
 // http://<host>:49154/MediaRenderer/desc.xml. The description must
 // identify as "Yamaha Corporation" and carry a UDN; otherwise Describe
-// returns an error saying why.
+// returns an error saying why, wrapping ErrNotYamaha when the host
+// answered as another manufacturer's device.
 //
 // timeout bounds the whole call, including the description fetch.
 func Describe(ctx context.Context, host string, timeout time.Duration) (Device, error) {

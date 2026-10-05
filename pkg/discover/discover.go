@@ -2,6 +2,7 @@ package discover
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +31,11 @@ const mediaRendererST = "urn:schemas-upnp-org:device:MediaRenderer:1"
 // substring, to avoid accidentally swallowing other vendors that
 // reference Yamaha in their text.
 const yamahaManufacturer = "Yamaha Corporation"
+
+// ErrNotYamaha is wrapped by the error Describe returns when the host
+// answered with the description of another manufacturer's device: the
+// host is reachable, but it is not a Yamaha receiver.
+var ErrNotYamaha = errors.New("not a Yamaha receiver")
 
 // Device is a discovered Yamaha receiver.
 type Device struct {
@@ -286,7 +292,7 @@ func fetchOne(ctx context.Context, client *http.Client, location string) (Device
 		return Device{}, fmt.Errorf("%s: %w", location, err)
 	}
 	if desc.Manufacturer != yamahaManufacturer {
-		return Device{}, fmt.Errorf("%s: not a Yamaha receiver (manufacturer %q)", location, desc.Manufacturer)
+		return Device{}, fmt.Errorf("%s: %w (manufacturer %q)", location, ErrNotYamaha, desc.Manufacturer)
 	}
 	if desc.UDN == "" {
 		return Device{}, fmt.Errorf("%s: description has no UDN", location)

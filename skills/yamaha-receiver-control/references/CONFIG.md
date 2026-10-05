@@ -55,7 +55,7 @@ A receiver command run with `--host` / `YAMAHA_HOST` never writes the config. To
 |---|---|---|
 | First-run wizard (any receiver command, nothing resolved) | TTY + SSDP multicast | Yes |
 | `yamaha discover --add` | TTY + SSDP multicast | Yes |
-| `yamaha config add <alias> --host <ip>` | The IP; no TTY, no multicast | Yes if the probe reaches the receiver; else a `warning:` and no UDN |
+| `yamaha config add <alias> --host <ip>` | The IP; no TTY, no multicast | Yes if the probe reaches the receiver; else a `warning:` and no UDN. A non-Yamaha device at that address: nothing saved (exit 1) |
 | Hand-edit the file at `yamaha config path` | — | Only if you add it |
 
 `config add` is the non-interactive path (scripts, agents). Flags and exit codes: [COMMANDS.md](COMMANDS.md#subcommands).

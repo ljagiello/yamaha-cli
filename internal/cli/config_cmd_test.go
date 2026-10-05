@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -116,6 +117,50 @@ func TestConfigAdd_ProbeFailureStillSavesWithoutUDN(t *testing.T) {
 		"Saved nr-800 → 192.168.1.164 (" + config.Path() + ")\n"
 	if stderr != wantStderr {
 		t.Errorf("stderr:\ngot  %q\nwant %q", stderr, wantStderr)
+	}
+}
+
+// TestConfigAdd_NonYamahaHostSavesNothing pins that a host answering as
+// another vendor's device (typically a mistyped IP) is an error, not the
+// warn-and-save path meant for an unreachable receiver.
+func TestConfigAdd_NonYamahaHostSavesNothing(t *testing.T) {
+	tests := []struct {
+		name string
+		seed *config.Config
+	}{
+		{"empty config", nil},
+		{"existing config", &config.Config{
+			DefaultDevice: "living-room",
+			Devices:       map[string]config.Device{"living-room": {Host: "192.0.2.10", DefaultZone: "main"}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isolateFromUserEnv(t)
+			if tt.seed != nil {
+				seedConfig(t, tt.seed)
+			}
+			stubDescribe(t, fmt.Errorf("http://192.0.2.50:49154/MediaRenderer/desc.xml: %w (manufacturer %q)",
+				discover.ErrNotYamaha, "Sonos, Inc."))
+
+			_, stderr, err := execConfigAdd(context.Background(), "den", "--host", "192.0.2.50", "--set-default")
+			if err == nil || !strings.Contains(err.Error(), "192.0.2.50 answered but is not a Yamaha receiver; check the address") {
+				t.Fatalf("expected not-a-Yamaha error, got %v", err)
+			}
+			if code := ErrorExitCode(err); code != 1 {
+				t.Errorf("exit code: got %d want 1", code)
+			}
+			if stderr != "" {
+				t.Errorf("stderr should be empty, got %q", stderr)
+			}
+			if tt.seed == nil {
+				if _, statErr := os.Stat(config.Path()); !errors.Is(statErr, os.ErrNotExist) {
+					t.Errorf("config file must not be written for a non-Yamaha host (stat err: %v)", statErr)
+				}
+			} else if got := loadConfig(t); !reflect.DeepEqual(got, tt.seed) {
+				t.Errorf("config changed for a non-Yamaha host: got %+v", got)
+			}
+		})
 	}
 }
 

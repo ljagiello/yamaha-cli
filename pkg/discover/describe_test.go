@@ -162,12 +162,13 @@ func TestDescribe_FallsBackToWellKnownURLWithoutSSDPReply(t *testing.T) {
 
 func TestDescribe_RejectsUnusableDescriptions(t *testing.T) {
 	tests := []struct {
-		name    string
-		body    string
-		wantErr string
+		name          string
+		body          string
+		wantErr       string
+		wantNotYamaha bool
 	}{
-		{"non-Yamaha manufacturer", sampleNonYamahaXML, "not a Yamaha receiver"},
-		{"missing UDN", sampleNoUDNXML, "no UDN"},
+		{"non-Yamaha manufacturer", sampleNonYamahaXML, "not a Yamaha receiver", true},
+		{"missing UDN", sampleNoUDNXML, "no UDN", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -178,6 +179,9 @@ func TestDescribe_RejectsUnusableDescriptions(t *testing.T) {
 			_, err := Describe(context.Background(), "127.0.0.1", describeTestTimeout)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+			if got := errors.Is(err, ErrNotYamaha); got != tt.wantNotYamaha {
+				t.Errorf("errors.Is(err, ErrNotYamaha) = %v, want %v (err: %v)", got, tt.wantNotYamaha, err)
 			}
 		})
 	}

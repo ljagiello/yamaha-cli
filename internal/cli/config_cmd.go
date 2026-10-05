@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -70,7 +71,8 @@ func newConfigAddCmd() *cobra.Command {
 		Long: "Save a receiver under <alias> using the address from --host (or\n" +
 			"YAMAHA_HOST). The receiver's UPnP description is probed for its UDN,\n" +
 			"which lets the CLI find it again if DHCP changes its IP; if the probe\n" +
-			"fails the entry is still saved, without DHCP resilience.",
+			"fails the entry is still saved, without DHCP resilience. If the host\n" +
+			"answers as a non-Yamaha device, nothing is saved.",
 		Args: cobra.ExactArgs(1),
 		RunE: runConfigAdd,
 	}
@@ -119,6 +121,10 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	} else if err := cmd.Context().Err(); err != nil {
 		// Interrupted (Ctrl-C), not unreachable: abort without saving.
 		return err
+	} else if errors.Is(probeErr, discover.ErrNotYamaha) {
+		// The host answered as some other device, so the address is
+		// wrong (typically a typo); saving it would only fail later.
+		return fmt.Errorf("%s answered but is not a Yamaha receiver; check the address: %w", host, probeErr)
 	}
 
 	// Re-read after the probe, which can take seconds: another run may
