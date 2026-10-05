@@ -102,13 +102,21 @@ func unicastSearchLocation(ctx context.Context, host string, wait time.Duration)
 		if udp, ok := from.(*net.UDPAddr); !ok || !udp.IP.Equal(target.IP) {
 			continue
 		}
-		resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(buf[:n])), nil)
-		if err != nil {
-			continue
-		}
-		_ = resp.Body.Close()
-		if loc := resp.Header.Get("Location"); loc != "" {
+		if loc, ok := locationFromSSDPResponse(buf[:n]); ok {
 			return loc
 		}
 	}
+}
+
+// locationFromSSDPResponse returns the Location header of an SSDP
+// search response datagram, reporting false when msg is not an HTTP
+// response or carries no Location.
+func locationFromSSDPResponse(msg []byte) (string, bool) {
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(msg)), nil)
+	if err != nil {
+		return "", false
+	}
+	_ = resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	return loc, loc != ""
 }

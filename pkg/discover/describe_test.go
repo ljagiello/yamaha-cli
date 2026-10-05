@@ -32,6 +32,19 @@ const sampleNoUDNXML = `<?xml version="1.0" encoding="utf-8"?>
   </device>
 </root>`
 
+// rxV583SSDPReply is the unicast M-SEARCH reply an RX-V583 (firmware
+// 2.87) sent, verbatim.
+const rxV583SSDPReply = "HTTP/1.1 200 OK\r\n" +
+	"Location: http://192.168.1.116:49154/MediaRenderer/desc.xml\r\n" +
+	"Cache-Control: max-age=1800\r\n" +
+	"Content-Length: 0\r\n" +
+	"Server: Linux/3.2 UPnP/1.0 Network_Module/1.0 (RX-V583)\r\n" +
+	"EXT:\r\n" +
+	"ST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n" +
+	"USN: uuid:9ab0c000-f668-11de-9976-00a0defbe863::urn:schemas-upnp-org:device:MediaRenderer:1\r\n" +
+	"X-ModelName: RX-V583:00A0DEFBE863:RX-V583 FBE863\r\n" +
+	"\r\n"
+
 // stubDescribePorts points Describe's unicast M-SEARCH and its
 // well-known-URL fallback at local test sockets.
 func stubDescribePorts(t *testing.T, ssdpPort int, fallbackPort string) {
@@ -242,4 +255,30 @@ func TestDescribe_HonorsCancelledContext(t *testing.T) {
 			t.Fatalf("Describe took %v after cancel; expected it to stop promptly", elapsed)
 		}
 	})
+}
+
+func TestLocationFromSSDPResponse(t *testing.T) {
+	const loc = "http://192.168.1.116:49154/MediaRenderer/desc.xml"
+	tests := []struct {
+		name   string
+		msg    string
+		want   string
+		wantOK bool
+	}{
+		{"RX-V583 reply", rxV583SSDPReply, loc, true},
+		{"upper-case header name", "HTTP/1.1 200 OK\r\nLOCATION: " + loc + "\r\n\r\n", loc, true},
+		{"no Location", "HTTP/1.1 200 OK\r\nST: " + mediaRendererST + "\r\n\r\n", "", false},
+		{"empty Location", "HTTP/1.1 200 OK\r\nLocation:\r\n\r\n", "", false},
+		{"NOTIFY, not a search reply", "NOTIFY * HTTP/1.1\r\nLOCATION: " + loc + "\r\nNTS: ssdp:alive\r\n\r\n", "", false},
+		{"headers cut off", "HTTP/1.1 200 OK\r\nLocation: " + loc, "", false},
+		{"garbage", "\x00\xff\r\n\r\n", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := locationFromSSDPResponse([]byte(tt.msg))
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("locationFromSSDPResponse = (%q, %v), want (%q, %v)", got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
 }
