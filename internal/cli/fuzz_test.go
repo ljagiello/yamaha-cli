@@ -21,6 +21,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/spf13/cobra"
+
 	"github.com/ljagiello/yamaha-cli/internal/config"
 	"github.com/ljagiello/yamaha-cli/internal/output"
 	"github.com/ljagiello/yamaha-cli/pkg/ynca"
@@ -115,6 +117,37 @@ func FuzzParseSignedInt(f *testing.F) {
 			t.Fatalf("parseSignedInt(%q) = %d, %v; strconv.Atoi = %d, %v", s, got, err, want, wantErr)
 		}
 	})
+}
+
+// TestSignedArgs_RejectDoubledSigns pins the doubled-sign bug the fuzzer
+// found: one leading sign is fine, but "+-3" and friends must be a usage
+// error (exit 2) before any device I/O. The state has no client or host, so
+// a value that wrongly parses fails with a non-usage error, never a dial.
+func TestSignedArgs_RejectDoubledSigns(t *testing.T) {
+	doubled := []string{"+-3", "++3", "-+3"}
+	for _, v := range doubled {
+		if n, err := parseSignedInt(v); err == nil {
+			t.Errorf("parseSignedInt(%q) = %d, want an error", v, n)
+		}
+	}
+	for _, c := range []struct {
+		name  string
+		build func() *cobra.Command
+		args  func(v string) []string
+	}{
+		{"tone", newToneCmd, func(v string) []string { return []string{"bass", v} }},
+		{"ynca tone", newYncaToneCmd, func(v string) []string { return []string{"bass", v} }},
+		{"ynca volume", newYncaVolumeCmd, func(v string) []string { return []string{v} }},
+	} {
+		for _, v := range doubled {
+			t.Run(c.name+" "+v, func(t *testing.T) {
+				cmd := c.build()
+				cmd.SetContext(context.Background())
+				setStateOnCmd(cmd, &state{zone: "main"})
+				requireUsageError(t, cmd.RunE(cmd, c.args(v)), c.name+" "+v)
+			})
+		}
+	}
 }
 
 func FuzzParseOnOff(f *testing.F) {

@@ -363,7 +363,7 @@ func newYncaVolumeCmd() *cobra.Command {
 			case "down":
 				op = func(c *ynca.Client) error { return c.VolumeDown(ctx, subunit, stepFlag) }
 			default:
-				db, perr := strconv.ParseFloat(strings.TrimPrefix(raw, "+"), 64)
+				db, perr := strconv.ParseFloat(raw, 64)
 				if perr != nil {
 					return newUsageError("invalid volume %q (want dB value, up, or down)", args[0])
 				}
