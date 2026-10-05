@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -206,6 +207,29 @@ func TestYncaSubcmd_TransportRejectsNonSource(t *testing.T) {
 	}
 	if code := ErrorExitCode(err); code != 2 {
 		t.Errorf("play --source TUNER exit code = %d, want 2 (usage): %v", code, err)
+	}
+}
+
+// TestYncaSubcmd_NonFiniteNumbersRejected: ParseFloat accepts NaN and ±Inf
+// spellings, which no dB or MHz value can be. They must fail as usage
+// errors (exit 2) instead of reaching the receiver as "NaN"/"+Inf". The
+// value is checked before any dial, so no server is needed.
+func TestYncaSubcmd_NonFiniteNumbersRejected(t *testing.T) {
+	shrinkYNCATimeouts(t, 200*time.Millisecond, 200*time.Millisecond)
+
+	for _, sub := range [][]string{{"tuner", "fm"}, {"volume"}, {"tone", "bass"}} {
+		for _, raw := range []string{"nan", "NaN", "inf", "-Inf", "1e400"} {
+			args := append(slices.Clone(sub), "--", raw)
+			cmd := newYncaCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(args)
+			cmd.SetContext(context.WithValue(context.Background(), stateKey, newYncaState(t, "127.0.0.1:1")))
+
+			if err := cmd.Execute(); ErrorExitCode(err) != 2 {
+				t.Errorf("ynca %v: exit code %d (%v), want 2 (usage)", args, ErrorExitCode(err), err)
+			}
+		}
 	}
 }
 

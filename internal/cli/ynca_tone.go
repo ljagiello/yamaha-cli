@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -81,7 +82,7 @@ func newYncaToneCmd() *cobra.Command {
 			// device clamps/rejects per its own model-specific bounds.
 			rawVal := strings.TrimSpace(args[1])
 			db, perr := strconv.ParseFloat(rawVal, 64)
-			if perr != nil {
+			if perr != nil || math.IsNaN(db) || math.IsInf(db, 0) {
 				return newUsageError("invalid tone value %q (want a dB number in the device's tone range)", rawVal)
 			}
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -364,7 +365,7 @@ func newYncaVolumeCmd() *cobra.Command {
 				op = func(c *ynca.Client) error { return c.VolumeDown(ctx, subunit, stepFlag) }
 			default:
 				db, perr := strconv.ParseFloat(raw, 64)
-				if perr != nil {
+				if perr != nil || math.IsNaN(db) || math.IsInf(db, 0) {
 					return newUsageError("invalid volume %q (want dB value, up, or down)", args[0])
 				}
 				op = func(c *ynca.Client) error { return c.SetVolume(ctx, subunit, db) }

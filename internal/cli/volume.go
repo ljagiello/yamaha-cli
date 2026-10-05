@@ -130,7 +130,17 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		if math.IsNaN(f) || f < 0 || f > 100 {
 			return yxc.VolumeArg{}, newUsageError("--percent must be in [0,100]")
 		}
-		n := min + int(math.Round(f/100*float64(max-min)))
+		// Interpolate in float64 and clamp before converting: max-min can
+		// overflow int for an absurd device range, and int() of a float
+		// at or past float64(math.MaxInt) is platform-dependent.
+		v := float64(min) + math.Round(f/100*(float64(max)-float64(min)))
+		n := min
+		switch {
+		case v >= float64(max):
+			n = max
+		case v > float64(min):
+			n = int(v)
+		}
 		return yxc.VolumeAbsolute(clampInt(n, min, max)), nil
 	}
 
