@@ -510,6 +510,10 @@ func FuzzDumpTranscript(f *testing.F) {
 		{"@MAIN:PWR=?", ""},
 		{"@MAIN:PWR=?", "garbage"},
 		{"@MAIN:PWR=?", "@UNDEFINED\r@MAIN:PWR=On"},
+		// A bare LF inside one CRLF-framed reply must not escape into
+		// extra transcript lines.
+		{"@ZONE9:PWR=?", "@UNDEFINED\n@ZONE9:PWR=On"},
+		{"@MAIN:BASIC=?", "@MAIN:VOL=-30.0\n@MAIN:MUTE=Off"},
 	} {
 		f.Add(c[0], c[1])
 	}

@@ -133,6 +133,13 @@ func writeDumpReplies(w io.Writer, request string, lines []string) {
 		return
 	}
 	for _, ln := range lines {
+		if strings.Contains(ln, "\n") {
+			// splitCRLF frames replies on "\r\n", so a bare LF can survive
+			// inside one. Written verbatim it would become extra transcript
+			// lines; it isn't a valid report line, so quote it as a comment.
+			fmt.Fprintf(w, "# %s -> %q\n", request, ln)
+			continue
+		}
 		if strings.HasPrefix(ln, "@UNDEFINED") || strings.HasPrefix(ln, "@RESTRICTED") {
 			fmt.Fprintf(w, "# %s -> %s\n", request, ln)
 			continue
