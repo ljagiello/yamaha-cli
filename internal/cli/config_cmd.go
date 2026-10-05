@@ -105,12 +105,9 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	setDefault, _ := cmd.Flags().GetBool("set-default")
 	force, _ := cmd.Flags().GetBool("force")
 
-	cfg, err := config.Load()
-	if err != nil {
+	// Check the alias before probing so a rejected one is never probed.
+	if _, err := loadConfigForAdd(alias, force); err != nil {
 		return err
-	}
-	if _, exists := cfg.Devices[alias]; exists && !force {
-		return fmt.Errorf("alias %q already exists in config; pass --force to overwrite", alias)
 	}
 
 	errOut := cmd.ErrOrStderr()
@@ -124,6 +121,13 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Re-read after the probe, which can take seconds: another run may
+	// have saved meanwhile, and writing the copy loaded above would drop
+	// its entry.
+	cfg, err := loadConfigForAdd(alias, force)
+	if err != nil {
+		return err
+	}
 	if cfg.Devices == nil {
 		cfg.Devices = map[string]config.Device{}
 	}
@@ -140,6 +144,19 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(errOut, "Saved %s → %s (%s)\n", alias, host, config.Path())
 	return nil
+}
+
+// loadConfigForAdd loads the config, refusing an alias that already
+// exists unless force is set.
+func loadConfigForAdd(alias string, force bool) (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	if _, exists := cfg.Devices[alias]; exists && !force {
+		return nil, fmt.Errorf("alias %q already exists in config; pass --force to overwrite", alias)
+	}
+	return cfg, nil
 }
 
 // configToMap renders a *config.Config into a map shape the output

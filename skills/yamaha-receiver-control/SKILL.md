@@ -28,7 +28,7 @@ Then point the CLI at a receiver (pick **one**):
 | `YAMAHA_HOST=<ip>` env var | One-shot, scripted | None |
 | `--host <ip>` flag on each invocation | Quick experiments | None |
 
-**Agents: persist a receiver with `config add`.** There is no TTY, so the first-run wizard and `discover --add` can't prompt. Get the IP from the user, or from `yamaha discover --output json` if multicast reaches the receiver. If the probe fails, `config add` prints a `warning:` and saves without a UDN (no DHCP resilience). The alias becomes `default_device` if none is set yet (`--set-default` forces it); `--force` overwrites an existing alias (otherwise exit 1). Flags: [references/COMMANDS.md](references/COMMANDS.md).
+**Agents: persist a receiver with `config add`.** There is no TTY, so the first-run wizard and `discover --add` can't prompt. Get the IP from the user, or from `yamaha discover --output json` if multicast reaches the receiver. If the probe fails, `config add` prints a `warning:` and saves without a UDN (no DHCP resilience). The alias becomes `default_device` if none is set yet (`--set-default` forces it); `--force` overwrites an existing alias (otherwise exit 1). Run `config add` calls one at a time, not in parallel. Flags: [references/COMMANDS.md](references/COMMANDS.md).
 
 `--host` / `YAMAHA_HOST` skip the config: no wizard runs and nothing is saved. Without them, if no device resolves from config, a receiver command on a TTY starts an interactive wizard; non-TTY, it exits 64 with a hint.
 

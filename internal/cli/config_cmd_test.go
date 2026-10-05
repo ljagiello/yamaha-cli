@@ -245,6 +245,75 @@ func TestConfigAdd_UsageErrors(t *testing.T) {
 	}
 }
 
+// stubDescribeWithConcurrentAdd replaces the UPnP probe with one that,
+// before finding probedRXV583, saves alias → dev the way an overlapping
+// `config add` run would.
+func stubDescribeWithConcurrentAdd(t *testing.T, alias string, dev config.Device) {
+	t.Helper()
+	prev := describeFn
+	describeFn = func(context.Context, string, time.Duration) (discover.Device, error) {
+		cfg := loadConfig(t)
+		if cfg.Devices == nil {
+			cfg.Devices = map[string]config.Device{}
+		}
+		cfg.Devices[alias] = dev
+		if cfg.DefaultDevice == "" {
+			cfg.DefaultDevice = alias
+		}
+		seedConfig(t, cfg)
+		return probedRXV583, nil
+	}
+	t.Cleanup(func() { describeFn = prev })
+}
+
+// TestConfigAdd_KeepsEntrySavedDuringProbe pins that a device saved by
+// another `config add` while this one probes survives: the config is
+// re-read after the probe instead of overwritten with the stale copy.
+func TestConfigAdd_KeepsEntrySavedDuringProbe(t *testing.T) {
+	isolateFromUserEnv(t)
+	bedroom := config.Device{Host: "192.0.2.20", DefaultZone: "main"}
+	stubDescribeWithConcurrentAdd(t, "bedroom", bedroom)
+
+	if _, _, err := execConfigAdd(context.Background(), "living-room", "--host", "192.0.2.10"); err != nil {
+		t.Fatalf("config add: %v", err)
+	}
+
+	want := &config.Config{
+		DefaultDevice: "bedroom",
+		Devices: map[string]config.Device{
+			"bedroom":     bedroom,
+			"living-room": {Host: "192.0.2.10", UDN: probedRXV583.UDN, DefaultZone: "main"},
+		},
+	}
+	if got := loadConfig(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("config:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// TestConfigAdd_AliasTakenDuringProbeNeedsForce pins that the alias is
+// checked again after the probe, so an entry another run saved under the
+// same alias meanwhile is not silently overwritten.
+func TestConfigAdd_AliasTakenDuringProbeNeedsForce(t *testing.T) {
+	isolateFromUserEnv(t)
+	other := config.Device{Host: "192.0.2.20", DefaultZone: "main"}
+	stubDescribeWithConcurrentAdd(t, "living-room", other)
+
+	_, _, err := execConfigAdd(context.Background(), "living-room", "--host", "192.0.2.10")
+	if err == nil || !strings.Contains(err.Error(), `alias "living-room" already exists in config; pass --force to overwrite`) {
+		t.Fatalf("expected already-exists error, got %v", err)
+	}
+	if code := ErrorExitCode(err); code != 1 {
+		t.Errorf("exit code: got %d want 1", code)
+	}
+	want := &config.Config{
+		DefaultDevice: "living-room",
+		Devices:       map[string]config.Device{"living-room": other},
+	}
+	if got := loadConfig(t); !reflect.DeepEqual(got, want) {
+		t.Errorf("config:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
 // TestConfigAdd_InterruptedProbeSavesNothing pins that Ctrl-C during the
 // probe aborts the command instead of being treated as an unreachable
 // device and saving a UDN-less entry.
