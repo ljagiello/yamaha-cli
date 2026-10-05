@@ -145,7 +145,7 @@ yamaha status -o json | jq .volume_db        # → -22.5
 yamaha volume 60                             # absolute
 yamaha volume +5                             # one HTTP call: setVolume?volume=up&step=5
 yamaha volume down --step 3
-yamaha volume -22.5 --db                     # absolute, dB-converted
+yamaha volume --db -- -22.5                  # absolute, dB-converted; '--' since it's negative
 yamaha volume 50 --percent                   # absolute, 0..100 scaled to device max
 
 # Power on then switch input — no manual sleep needed; power on polls until ready.

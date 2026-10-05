@@ -109,6 +109,46 @@ func TestRunVolume_PlusFiveOneRequest(t *testing.T) {
 	}
 }
 
+// TestRunVolume_NegativeDBAfterTerminator runs the README's negative dB
+// form, `volume --db -- -22.5`, through cobra's argument parsing: the
+// value after `--` is an absolute -22.5 dB (wire 116 on the fallback
+// -80.5 dB / 0.5 dB scale), not a delta.
+func TestRunVolume_NegativeDBAfterTerminator(t *testing.T) {
+	resetFeatureLoader(t)
+	redirectCacheDir(t)
+
+	const deviceID = "00A0DECAFE03"
+
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/system/getDeviceInfo"):
+			_, _ = w.Write([]byte(`{"response_code":0,"device_id":"` + deviceID + `","model_name":"RX-V583"}`))
+		case strings.HasSuffix(r.URL.Path, "/main/setVolume"):
+			gotQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"response_code":0}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cmd := newVolumeCmd()
+	cmd.SetContext(context.Background())
+	setStateOnCmd(cmd, newVolumeTestState(t, srv, deviceID))
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetArgs([]string{"--db", "--", "-22.5"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("volume --db -- -22.5: %v", err)
+	}
+	if gotQuery != "volume=116" {
+		t.Errorf("setVolume query: got %q, want %q", gotQuery, "volume=116")
+	}
+}
+
 // TestRunVolume_DBWithDeltaErrors asserts the README: combining --db with a
 // signed delta (+5) is a usage error (exit 2). No setVolume request must
 // fire.

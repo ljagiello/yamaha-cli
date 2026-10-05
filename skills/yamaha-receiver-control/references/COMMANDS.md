@@ -67,7 +67,7 @@ The `volume` command takes one positional argument. Modifiers are mutually exclu
 | Absolute integer | `setVolume?volume=N` (clamped 0..max) | `volume 60` |
 | Signed delta | `setVolume?volume=up\|down&step=N` (single roundtrip, no GET-then-SET) | `volume +5`, `volume -- -3` |
 | Token | `setVolume?volume=up\|down` (default step) | `volume up`, `volume down --step 2` |
-| Decibels (absolute) | converts to integer via `getFeatures` range, sends absolute | `volume -22.5 --db` |
+| Decibels (absolute) | converts to integer via `getFeatures` range, sends absolute | `volume --db -- -22.5` |
 | Percent (absolute) | scales 0..100 to 0..max, sends absolute | `volume 50 --percent` |
 
 Errors:

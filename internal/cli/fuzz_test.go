@@ -263,7 +263,7 @@ func FuzzParseVolumeArg(f *testing.F) {
 			// Features are loaded, so every rejection is about the argument.
 			requireUsageError(t, err, call)
 			// --db takes absolute values such as the README's
-			// `volume -22.5 --db`; only a '+' delta is misuse.
+			// `volume --db -- -22.5`; only a '+' delta is misuse.
 			if db && !strings.HasPrefix(raw, "+") {
 				if v, perr := strconv.ParseFloat(raw, 64); perr == nil && !math.IsNaN(v) {
 					t.Fatalf("%s rejected dB value %v: %v", call, v, err)

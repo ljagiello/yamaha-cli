@@ -45,7 +45,7 @@ yamaha power on|off|toggle [--no-wait]       # default: blocks until power refle
 yamaha volume 60                             # absolute integer (0..max from device)
 yamaha volume +5                             # one HTTP call: setVolume?volume=up&step=5
 yamaha volume -- -5                          # NOTE: negative deltas need "--" because of cobra
-yamaha volume -22.5 --db                     # absolute, dB-scaled
+yamaha volume --db -- -22.5                  # absolute, dB-scaled; negative dB needs "--" too
 yamaha volume 50 --percent                   # absolute, 0..100 → device range
 yamaha mute on|off|toggle
 yamaha input hdmi1                           # validated against device's input list
