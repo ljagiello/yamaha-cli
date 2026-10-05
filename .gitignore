@@ -21,6 +21,7 @@ dist/
 # Local state
 .envrc
 .env
+.claude/
 
 # Jekyll build output (the Pages workflow regenerates this in CI)
 _site/
