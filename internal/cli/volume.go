@@ -110,9 +110,13 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 
 	if dbFlag {
 		f, ferr := strconv.ParseFloat(raw, 64)
-		if ferr != nil {
+		if ferr != nil || math.IsNaN(f) {
 			return yxc.VolumeArg{}, newUsageError("invalid db value %q", raw)
 		}
+		// Clamp in dB first: converting an out-of-range float to int is
+		// platform-dependent (amd64 yields MinInt64, so "--db 1e19" or
+		// "--db inf" would land on the minimum volume).
+		f = math.Max(feats.VolumeIntToDB(s.zone, min), math.Min(f, feats.VolumeIntToDB(s.zone, max)))
 		// Inverse of Features.VolumeIntToDB, sharing the same dB scale
 		// (device range_step, or the RX-V fallback when absent).
 		n := feats.VolumeDBToInt(s.zone, f)
@@ -123,7 +127,7 @@ func parseVolumeArg(s *state, ctx context.Context, raw string, dbFlag, percentFl
 		if ferr != nil {
 			return yxc.VolumeArg{}, newUsageError("invalid percent value %q", raw)
 		}
-		if f < 0 || f > 100 {
+		if math.IsNaN(f) || f < 0 || f > 100 {
 			return yxc.VolumeArg{}, newUsageError("--percent must be in [0,100]")
 		}
 		n := min + int(math.Round(f/100*float64(max-min)))

@@ -242,6 +242,10 @@ func FuzzParseVolumeArg(f *testing.F) {
 		{"42", false, false, 0}, {"0", false, false, 0}, {"161", false, false, 0}, {"999", false, false, 0},
 		{"9223372036854775807", false, false, 0}, {"0x10", false, false, 0}, {" 5", false, false, 0},
 		{"-22.5", true, false, 0}, {"-80.5", true, false, 0}, {"-200", true, false, 0},
+		// Non-finite and huge floats: float->int conversion of these is
+		// platform-dependent (amd64 yields MinInt64, arm64 saturates).
+		{"nan", true, false, 0}, {"NaN", false, true, 0}, {"inf", true, false, 0}, {"-Inf", true, false, 0},
+		{"1e19", true, false, 0}, {"-1e19", true, false, 0},
 		{"0", true, false, 0}, {"16.5", true, false, 0}, {"1e3", true, false, 0}, {"1e400", true, false, 0},
 		{"50", false, true, 0}, {"0", false, true, 0}, {"100", false, true, 0}, {"100.5", false, true, 0},
 		{"abc", false, false, 0}, {"", false, false, 0}, {"+", false, false, 0}, {"-", true, false, 0},
