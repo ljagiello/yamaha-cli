@@ -155,7 +155,7 @@ func (f *Features) VolumeRange(zone string) (min, max, step int, ok bool) {
 	}
 	for _, r := range z.RangeStep {
 		if r.ID == "volume" {
-			return int(r.Min), int(r.Max), int(r.Step), true
+			return saturatingInt(r.Min), saturatingInt(r.Max), saturatingInt(r.Step), true
 		}
 	}
 	return 0, 0, 0, false

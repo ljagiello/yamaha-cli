@@ -47,5 +47,21 @@ func (f *Features) VolumeDBToInt(zone string, db float64) int {
 	if step == 0 {
 		return 0
 	}
-	return int(math.Round((db - baseline) / step))
+	return saturatingInt(math.Round((db - baseline) / step))
+}
+
+// saturatingInt truncates f toward zero, clamping to [math.MinInt,
+// math.MaxInt] and mapping NaN to 0. A bare int(f) is implementation-
+// defined when f doesn't fit (amd64 yields math.MinInt64 even for huge
+// positive values), so device-reported numbers must not reach one.
+func saturatingInt(f float64) int {
+	switch {
+	case f >= math.MaxInt:
+		return math.MaxInt
+	case f <= math.MinInt:
+		return math.MinInt
+	case math.IsNaN(f):
+		return 0
+	}
+	return int(f)
 }
