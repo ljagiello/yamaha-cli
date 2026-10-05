@@ -516,7 +516,7 @@ What's still on the table:
 
 ## Releasing
 
-Maintainers: **Actions → Release → Run workflow**, then pick the version bump — `patch` for fixes, `minor` for features, `major` for breaking changes (while on 0.x, a `minor` bump may also break compatibility). Tick **dry-run** first to build everything without publishing. Pushing a `vX.Y.Z` tag by hand releases too.
+Maintainers: **Actions → Release → Run workflow**, then pick the version bump — `patch` for fixes, `minor` for features, `major` for breaking changes (while on 0.x, a `minor` bump may also break compatibility; going past v1 first needs the module path in `go.mod` renamed to end in `/vN`). Tick **dry-run** first to build everything without publishing. Pushing a `vX.Y.Z` tag by hand releases too.
 
 If a run fails after pushing its tag, don't delete the tag and run the workflow again: that would put the same version on whatever commit main is at now, while the Go module proxy may already have recorded the original. Instead, delete any GitHub release the run created (`gh release delete vX.Y.Z --yes`), then re-push the same tag at the same commit from a local clone: `git fetch --tags && git push --delete origin vX.Y.Z && git push origin vX.Y.Z`. A tag pushed with your own credentials starts the tag-push release on that commit. Any tag ruleset covering `v*` must let `github-actions[bot]` push.
 

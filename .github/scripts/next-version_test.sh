@@ -17,12 +17,18 @@ failures=0
 # check WANT BUMP COMMIT...
 # Builds a repo with one commit per COMMIT, oldest first; each COMMIT is a
 # comma-separated list of tags to put on it, or "-" for none. The last
-# commit is HEAD. WANT is the expected output, or "fail" for an error exit.
+# commit is HEAD. The first commit adds a go.mod for module $module
+# (default example.com/m), or none if module=-. WANT is the expected
+# output, or "fail" for an error exit.
 check() {
-  local want=$1 bump=$2 dir got commit tag tags
+  local want=$1 bump=$2 mod=${module:-example.com/m} dir got commit tag tags
   shift 2
   dir=$(mktemp -d "$tmp/repo.XXXXXX")
   git -C "$dir" init -q -b main
+  if [ "$mod" != - ]; then
+    echo "module $mod" >"$dir/go.mod"
+    git -C "$dir" add go.mod
+  fi
   for commit in "$@"; do
     git -C "$dir" commit -q --allow-empty -m "$commit"
     if [ "$commit" != - ]; then
@@ -34,9 +40,9 @@ check() {
   done
   got=$(cd "$dir" && "$script" "$bump" 2>/dev/null) || got=fail
   if [ "$got" = "$want" ]; then
-    echo "ok   $bump after [$*] -> $got"
+    echo "ok   $bump after [$*] in $mod -> $got"
   else
-    echo "FAIL $bump after [$*] -> $got, want $want"
+    echo "FAIL $bump after [$*] in $mod -> $got, want $want"
     failures=$((failures + 1))
   fi
 }
@@ -50,7 +56,16 @@ check v0.1.1 patch v0.1.0 -
 check v0.1.10 patch v0.1.9 -
 check v1.2.4 patch v1.2.3 -
 check v1.3.0 minor v1.2.3 -
-check v2.0.0 major v1.2.3 -
+
+# From v2 on, the module path must end in /vMAJOR.
+check v1.0.0 major v0.9.9 -
+check fail major v1.2.3 -
+module=example.com/m/v2 check v2.0.0 major v1.2.3 -
+module=example.com/m/v2 check fail major v2.4.1 -
+module=example.com/m/v2 check v2.5.0 minor v2.4.1 -
+module=example.com/m/v2 check v2.4.2 patch v2.4.1 -
+check fail patch v2.4.1 -
+module=- check fail major v1.2.3 -
 
 # Tags that are not vMAJOR.MINOR.PATCH are ignored, even when they look higher.
 check v0.0.1 patch v1.2,foo,v1.2.3-rc.1 -

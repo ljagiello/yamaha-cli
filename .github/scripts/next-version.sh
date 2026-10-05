@@ -4,7 +4,8 @@
 # Prints the tag that follows the highest vMAJOR.MINOR.PATCH tag in the
 # current git repository, counting from v0.0.0 when there is none. Other
 # tags (v1.2, v1.2.3-rc.1, foo) are ignored. Fails if HEAD already carries
-# a release tag, so a commit is never released twice.
+# a release tag, so a commit is never released twice, and from v2 on if
+# the go.mod module path doesn't end in /vMAJOR.
 set -euo pipefail
 
 bump=${1:-}
@@ -36,7 +37,21 @@ while read -r tag; do
 done <<<"$tags"
 
 case $bump in
-  major) echo "v$((major + 1)).0.0" ;;
-  minor) echo "v$major.$((minor + 1)).0" ;;
-  patch) echo "v$major.$minor.$((patch + 1))" ;;
+  major) major=$((major + 1)) minor=0 patch=0 ;;
+  minor) minor=$((minor + 1)) patch=0 ;;
+  patch) patch=$((patch + 1)) ;;
 esac
+next=v$major.$minor.$patch
+
+# From v2 on, Go only accepts the tag if the module path ends in /vMAJOR.
+if [ "$major" -ge 2 ]; then
+  gomod=$(git rev-parse --show-toplevel)/go.mod
+  module=$(sed -n 's/^module[[:space:]]*//p' "$gomod" 2>/dev/null || true)
+  if [[ $module != */v$major ]]; then
+    echo "module path must end in /v$major before releasing $next" \
+      "(see go.dev/ref/mod#major-version-suffixes)" >&2
+    exit 1
+  fi
+fi
+
+echo "$next"
