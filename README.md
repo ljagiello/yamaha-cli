@@ -22,15 +22,33 @@ Covers power, volume, mute, input, sound program, surround decoder, scene, tone,
 - [Security note](#security-note)
 - [Run with Friday](#run-with-friday)
 - [Roadmap](#roadmap)
+- [Releasing](#releasing)
 - [Contributing & License](#contributing--license)
 
 ## Install
 
 ```bash
 go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest
+go install github.com/ljagiello/yamaha-cli/cmd/yamaha@v0.1.0   # or pin a specific release
 ```
 
 This drops a single `yamaha` binary in `$(go env GOBIN)` (or `$GOPATH/bin`).
+
+No Go toolchain? Each [GitHub release](https://github.com/ljagiello/yamaha-cli/releases) has prebuilt archives named `yamaha-cli_<version>_<os>_<arch>.tar.gz` (`<os>`: `linux`, `darwin`, `windows`, `freebsd`; `<arch>`: `x86_64`, `arm64`, except FreeBSD which is `x86_64` only; `.zip` on Windows) plus a `checksums.txt`. For example, v0.1.0 on Linux x86_64:
+
+```bash
+curl -LO https://github.com/ljagiello/yamaha-cli/releases/download/v0.1.0/yamaha-cli_0.1.0_linux_x86_64.tar.gz
+curl -LO https://github.com/ljagiello/yamaha-cli/releases/download/v0.1.0/checksums.txt
+sha256sum -c --ignore-missing checksums.txt    # macOS: shasum -a 256 -c --ignore-missing checksums.txt
+tar -xzf yamaha-cli_0.1.0_linux_x86_64.tar.gz yamaha
+sudo mv yamaha /usr/local/bin/
+```
+
+Check what's installed:
+
+```bash
+yamaha version                               # → yamaha-cli 0.1.0
+```
 
 ## Quickstart
 
@@ -485,7 +503,7 @@ See the [Friday Skills docs](https://docs.hellofriday.ai/core-concepts/skills) f
 
 After install, ask the agent in plain English (`"turn the receiver on and switch to HDMI 2"`, `"what's the volume in dB?"`, `"discover the Yamaha on my LAN and save it as 'living-room'"`) — it'll pick up the skill from the description and shell out to `yamaha` with the right flags. Progressive disclosure means the metadata is ~100 tokens at startup; `SKILL.md` loads only when the skill activates; `references/*.md` only when the agent navigates to them.
 
-**Prerequisite:** the agent's host needs the `yamaha` binary on `PATH` (`go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest`) and LAN access to the receiver — same as a human user.
+**Prerequisite:** the agent's host needs the `yamaha` binary on `PATH` (`go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest`, `@vX.Y.Z` to pin a version, or a prebuilt binary from [Releases](https://github.com/ljagiello/yamaha-cli/releases) — see [Install](#install)) and LAN access to the receiver — same as a human user.
 
 ## Roadmap
 
@@ -495,6 +513,12 @@ What's still on the table:
 
 - Typed wrappers for the bonus endpoints (`yamaha bluetooth list`, `yamaha ypao status`, etc.) where there's a concrete use case.
 - Live integration tests against non-RX-V receivers.
+
+## Releasing
+
+Maintainers: **Actions → Release → Run workflow**, then pick the version bump — `patch` for fixes, `minor` for features, `major` for breaking changes (while on 0.x, a `minor` bump may also break compatibility; going past v1 first needs the module path in `go.mod` renamed to end in `/vN`). Tick **dry-run** first to build everything without publishing. Pushing a `vX.Y.Z` tag by hand releases too.
+
+If a run fails after pushing its tag, don't delete the tag and run the workflow again: that would put the same version on whatever commit main is at now, while the Go module proxy may already have recorded the original. Instead, delete any GitHub release the run created (`gh release delete vX.Y.Z --yes`), then re-push the same tag at the same commit from a local clone: `git fetch --tags && git push --delete origin vX.Y.Z && git push origin vX.Y.Z`. A tag pushed with your own credentials starts the tag-push release on that commit. Any tag ruleset covering `v*` must let `github-actions[bot]` push.
 
 ## Contributing & License
 

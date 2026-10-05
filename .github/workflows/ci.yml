@@ -36,6 +36,10 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      - name: Test release version script
+        if: runner.os == 'Linux'
+        run: .github/scripts/next-version_test.sh
+
       - name: go vet
         run: go vet ./...
 

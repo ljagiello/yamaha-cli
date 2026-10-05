@@ -16,8 +16,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/ljagiello/yamaha-cli/internal/cli.Version={{.Version}}
-      - -X github.com/ljagiello/yamaha-cli/pkg/yxc.Version={{.Version}}
+      - -X main.Version={{.Version}}
     goos:
       - linux
       - darwin
@@ -74,3 +73,7 @@ changelog:
 release:
   draft: false
   prerelease: auto
+
+# When vX.Y.Z and vX.Y.Z-rc.N tag the same commit, release vX.Y.Z.
+git:
+  prerelease_suffix: "-"

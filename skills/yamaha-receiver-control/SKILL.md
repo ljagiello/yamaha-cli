@@ -15,9 +15,11 @@ Drive a Yamaha MusicCast/YXC receiver from the shell via the `yamaha` CLI.
 ## Setup (run once)
 
 ```bash
-go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest
+go install github.com/ljagiello/yamaha-cli/cmd/yamaha@latest   # or @vX.Y.Z to pin a version
 yamaha --version    # verify install: prints "yamaha-cli <version>"
 ```
+
+No Go? Download a prebuilt archive from https://github.com/ljagiello/yamaha-cli/releases, verify it against that release's `checksums.txt`, and put `yamaha` on `PATH`.
 
 Then point the CLI at a receiver (pick **one**):
 

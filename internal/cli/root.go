@@ -20,7 +20,8 @@ import (
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
-// Version is set from cmd/yamaha/main.go (which propagates -ldflags).
+// Version is set from cmd/yamaha/main.go (which resolves it from -ldflags
+// or the module build info).
 // Used by the version command and by `--version`.
 var Version = "dev"
 
