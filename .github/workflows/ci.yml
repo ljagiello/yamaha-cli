@@ -45,6 +45,44 @@ jobs:
       - name: go build
         run: go build ./...
 
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+
+      # Go fuzzes one target per invocation, so every Fuzz* function in
+      # the module is listed and run in turn; new targets need no edit here.
+      - name: go test -fuzz
+        run: |
+          failed=0
+          for pkg in $(go list ./...); do
+            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              echo "::group::$target ($pkg)"
+              if ! go test -run='^$' -fuzz="^${target}\$" -fuzztime=30s "$pkg"; then
+                echo "::error::$target failed in $pkg"
+                failed=1
+              fi
+              echo "::endgroup::"
+            done
+          done
+          exit "$failed"
+
+      # A failing input is saved under the package's testdata/fuzz/<target>/.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fuzz-crashers
+          path: '**/testdata/fuzz/**'
+          if-no-files-found: ignore
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest
