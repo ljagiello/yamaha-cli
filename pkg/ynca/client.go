@@ -377,6 +377,15 @@ const versionSentinel = "@SYS:VERSION=?"
 // versionEchoPrefix is what the fence echo looks like coming back.
 const versionEchoPrefix = "@SYS:VERSION="
 
+// maxMultiLines caps how many report lines one SendMulti drain collects
+// before the fence, so a peer that streams lines without ever echoing it
+// cannot grow the reply without bound (with the scanner's 64 KiB line cap,
+// at most 64 MiB). The largest real fan-out is @SYS:INPNAME=?, one line per
+// input (22 on an RX-V583, ~40 on flagship models); a BASIC GET is ~25. The
+// cap leaves 25x headroom over that, enough to absorb unsolicited pushes
+// (e.g. a volume knob being turned) that interleave with a slow drain.
+const maxMultiLines = 1024
+
 // SendMulti issues one YNCA line that may fan out to several report lines
 // (e.g. a `@MAIN:BASIC=?` GET, which a receiver answers with many
 // `@MAIN:FUNC=VALUE` lines), then drains every reply up to and including
@@ -388,7 +397,8 @@ const versionEchoPrefix = "@SYS:VERSION="
 // single-value GETs. Unlike Send, SendMulti does not classify
 // @UNDEFINED/@RESTRICTED into typed errors — for a fan-out GET those can
 // be legitimate per-field replies, so the caller inspects the returned
-// lines (see parseLine).
+// lines (see parseLine). A reply of more than maxMultiLines report lines
+// fails with ErrTooManyLines.
 func (c *Client) SendMulti(ctx context.Context, line string) ([]string, error) {
 	if line == "" {
 		return nil, errors.New("ynca: empty line")
@@ -475,6 +485,9 @@ func (c *Client) sendMultiOnceLocked(ctx context.Context, line string) (lines []
 		if strings.HasPrefix(reply, versionEchoPrefix) {
 			// Fence reached: every prior report line has been drained.
 			return lines, nil
+		}
+		if len(lines) == maxMultiLines {
+			return nil, ErrTooManyLines
 		}
 		lines = append(lines, reply)
 	}

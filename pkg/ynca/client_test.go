@@ -201,6 +201,56 @@ func TestSendMulti_NoFenceReturnsNoReply(t *testing.T) {
 	}
 }
 
+// TestSendMulti_LineCap: a peer that streams report lines without ever
+// echoing the fence must not grow the reply without bound. Exactly
+// maxMultiLines lines still drain; one more fails with a non-transport
+// ErrTooManyLines, and the connection is reset so the next command reads
+// its own reply rather than the stranded tail.
+func TestSendMulti_LineCap(t *testing.T) {
+	t.Parallel()
+	fanOut := func(n int) string {
+		return strings.TrimSuffix(strings.Repeat("@MAIN:VOL=-30.0\r\n", n), "\r\n")
+	}
+	addr := newFakeYNCA(t, func(line string) string {
+		switch line {
+		case "@MAIN:BASIC=?":
+			return fanOut(maxMultiLines)
+		case "@MAIN:FLOOD=?":
+			return fanOut(maxMultiLines + 1)
+		case "@MAIN:PWR=?":
+			return "@MAIN:PWR=On"
+		case "@SYS:VERSION=?":
+			return "@SYS:VERSION=1.00/2.00"
+		}
+		return "@UNDEFINED"
+	})
+	c, err := New(addr)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	lines, err := c.SendMulti(ctx, "@MAIN:BASIC=?")
+	if err != nil || len(lines) != maxMultiLines {
+		t.Fatalf("SendMulti at the cap = %d lines, %v; want %d lines", len(lines), err, maxMultiLines)
+	}
+
+	lines, err = c.SendMulti(ctx, "@MAIN:FLOOD=?")
+	if !errors.Is(err, ErrTooManyLines) || lines != nil {
+		t.Fatalf("SendMulti past the cap = %d lines, %v; want ErrTooManyLines", len(lines), err)
+	}
+	if IsTransport(err) {
+		t.Errorf("IsTransport(%v) = true; an oversized reply must not trigger rediscovery", err)
+	}
+
+	lines, err = c.SendMulti(ctx, "@MAIN:PWR=?")
+	if err != nil || len(lines) != 1 || lines[0] != "@MAIN:PWR=On" {
+		t.Fatalf("SendMulti after the cap error = %q, %v; want [@MAIN:PWR=On]", lines, err)
+	}
+}
+
 func TestSend_AddsAtAndCRLF(t *testing.T) {
 	t.Parallel()
 	// Use a raw listener so we can inspect exact bytes.

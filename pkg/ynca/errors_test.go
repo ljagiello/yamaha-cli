@@ -45,6 +45,7 @@ func TestIsTransport(t *testing.T) {
 		// Application sentinels.
 		{"ErrUnsupported", ErrUnsupported, false},
 		{"ErrNoReply", ErrNoReply, false},
+		{"ErrTooManyLines", ErrTooManyLines, false},
 
 		// Application typed errors.
 		{"ErrUndefinedCommand", &ErrUndefinedCommand{Line: "@UNDEFINED"}, false},
