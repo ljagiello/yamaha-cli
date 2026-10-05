@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"response_code\":0,\"playback\":\"play\",\"play_time\":9223372037,\"total_time\":18446744074}")
