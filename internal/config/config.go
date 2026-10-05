@@ -20,6 +20,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 
@@ -87,7 +88,8 @@ func loadFrom(path string) (*Config, error) {
 // Save atomically writes the config to disk. It creates parent directories
 // (mode 0755) as needed, writes the YAML to <path>.tmp (mode 0644), and
 // renames it into place. The temp file is cleaned up on any failure before
-// the rename.
+// the rename. A config that would not load back unchanged is refused
+// before anything is written.
 func Save(c *Config) error {
 	return saveTo(Path(), c)
 }
@@ -99,6 +101,15 @@ func saveTo(path string, c *Config) error {
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
+	}
+	// yaml.v3 writes some strings it cannot read back unchanged: an
+	// alias of "<<" (a YAML merge key) or a value starting with a
+	// tab-only line makes the file unloadable, locking the user out of
+	// every command, and a value of "\n" loads back as "".
+	var back Config
+	if err := yaml.Unmarshal(data, &back); err != nil ||
+		back.DefaultDevice != c.DefaultDevice || !maps.Equal(back.Devices, c.Devices) {
+		return errors.New("marshal config: an alias or value would not read back unchanged")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
