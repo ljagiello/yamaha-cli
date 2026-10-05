@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -95,9 +96,8 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	if host == "" {
 		return newUsageError("config add requires --host <ip> (or YAMAHA_HOST)")
 	}
-	// "/" also catches "://": the config stores a bare address.
-	if strings.Contains(host, "/") {
-		return newUsageError("host %q must be a bare IP or hostname (no scheme or path)", host)
+	if err := validateConfigHost(host); err != nil {
+		return err
 	}
 	zoneFlag, _ := cmd.Flags().GetString("default-zone")
 	zone, err := canonicalZone(zoneFlag)
@@ -150,6 +150,46 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(errOut, "Saved %s → %s (%s)\n", alias, host, config.Path())
 	return nil
+}
+
+// validateConfigHost accepts an IPv4 address or a hostname, the bare
+// address the config stores, and returns a usage error for anything
+// else: a scheme, port, path or brackets, and IPv6, because ynca reads
+// any ':' as a port separator and yxc puts the host in a URL unbracketed.
+func validateConfigHost(host string) error {
+	// Is4 is false for IPv4-mapped IPv6 such as ::ffff:192.0.2.1.
+	if addr, err := netip.ParseAddr(host); err == nil && addr.Is4() {
+		return nil
+	}
+	if isHostname(host) {
+		return nil
+	}
+	return newUsageError("host %q must be an IPv4 address or hostname (no scheme, port, or path)", host)
+}
+
+// isHostname reports whether s is at most 253 characters of
+// dot-separated labels, each 1-63 letters, digits, '-' or '_' (tolerated
+// in LAN names) that neither starts nor ends with '-'. An all-digit last
+// label is refused so a mistyped IPv4 address such as 192.0.2.300 is not
+// taken for a name.
+func isHostname(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	labels := strings.Split(s, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+			default:
+				return false
+			}
+		}
+	}
+	return strings.Trim(labels[len(labels)-1], "0123456789") != ""
 }
 
 // loadConfigForAdd loads the config, refusing an alias that already

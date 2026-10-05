@@ -257,8 +257,10 @@ func TestConfigAdd_UsageErrors(t *testing.T) {
 	}{
 		{"blank alias", []string{"  ", "--host", "192.168.1.120"}, "alias"},
 		{"invalid zone", []string{"den", "--host", "192.168.1.120", "--default-zone", "zone9"}, `invalid zone "zone9"`},
-		{"host with scheme", []string{"den", "--host", "http://192.168.1.120"}, "bare IP or hostname"},
-		{"host with path", []string{"den", "--host", "192.168.1.120/desc.xml"}, "bare IP or hostname"},
+		{"host with scheme", []string{"den", "--host", "http://192.168.1.120"}, "IPv4 address or hostname"},
+		{"host with path", []string{"den", "--host", "192.168.1.120/desc.xml"}, "IPv4 address or hostname"},
+		{"host with port", []string{"den", "--host", "192.0.2.10:80"}, "IPv4 address or hostname"},
+		{"IPv6 host", []string{"den", "--host", "fe80::1"}, "IPv4 address or hostname"},
 		{"no host", []string{"den"}, "config add requires --host <ip> (or YAMAHA_HOST)"},
 	}
 	for _, tt := range tests {
@@ -356,6 +358,56 @@ func TestConfigAdd_AliasTakenDuringProbeNeedsForce(t *testing.T) {
 	}
 	if got := loadConfig(t); !reflect.DeepEqual(got, want) {
 		t.Errorf("config:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+func TestValidateConfigHost(t *testing.T) {
+	label63 := strings.Repeat("a", 63)
+	name253 := label63 + "." + label63 + "." + label63 + "." + strings.Repeat("a", 61)
+	tests := []struct {
+		host   string
+		wantOK bool
+	}{
+		{"192.0.2.10", true},
+		{"receiver.lan", true},
+		{"rx-v583", true},
+		{"RX-V583", true},
+		{"my_host.local", true},
+		{label63, true},
+		{name253, true},
+
+		{"", false},
+		{"192.0.2.10:80", false},
+		{"[::1]", false},
+		{"::1", false},
+		{"fe80::1", false},
+		{"::ffff:192.0.2.10", false}, // IPv4-mapped IPv6 still has colons
+		{"192.0.2.300", false},       // typo'd IPv4, not a hostname
+		{"192.0.2", false},
+		{"http://x", false},
+		{"x/y", false},
+		{"bad host", false},
+		{"a..b", false},
+		{".x", false},
+		{"x.", false},
+		{"-x", false},
+		{"x-", false},
+		{"x.-y", false},
+		{label63 + "a", false},
+		{name253 + "a", false},
+		{"x\ny", false},
+		{"x\x00", false},
+		{"rx-v583.lané", false},
+	}
+	for _, tt := range tests {
+		err := validateConfigHost(tt.host)
+		if (err == nil) != tt.wantOK {
+			t.Errorf("validateConfigHost(%q) = %v, want ok=%v", tt.host, err, tt.wantOK)
+			continue
+		}
+		if err != nil && ErrorExitCode(err) != 2 {
+			t.Errorf("validateConfigHost(%q): exit code %d want 2", tt.host, ErrorExitCode(err))
+		}
 	}
 }
 
