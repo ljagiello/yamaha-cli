@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/internal/debuglog"
 	"github.com/ljagiello/yamaha-cli/pkg/discover"
 	"github.com/ljagiello/yamaha-cli/pkg/ynca"
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
@@ -19,18 +20,22 @@ import (
 // stubLookup swaps out lookupByUDNFn for the duration of a test and
 // records each call. The previous value is restored via t.Cleanup.
 type stubLookup struct {
-	calls   int
-	lastUDN string
-	dev     discover.Device
-	err     error
+	calls    int
+	lastUDN  string
+	lastHost string // the saved address the lookup was told to start from
+	traced   bool   // the lookup's ctx carried a discovery trace hook
+	dev      discover.Device
+	err      error
 }
 
 func (s *stubLookup) install(t *testing.T) {
 	t.Helper()
 	prev := lookupByUDNFn
-	lookupByUDNFn = func(ctx context.Context, udn string, timeout time.Duration) (discover.Device, error) {
+	lookupByUDNFn = func(ctx context.Context, udn, lastHost string, timeout time.Duration) (discover.Device, error) {
 		s.calls++
 		s.lastUDN = udn
+		s.lastHost = lastHost
+		s.traced = discover.ContextTrace(ctx) != nil
 		return s.dev, s.err
 	}
 	t.Cleanup(func() { lookupByUDNFn = prev })
@@ -278,6 +283,10 @@ func TestRunWithRediscover_LookupFails(t *testing.T) {
 	}
 	err := runWithRediscover(context.Background(), s, op)
 	assertUnreachable(t, err, "living-room", "uuid:abc")
+	// The saved address tells the lookup which subnet to probe.
+	if stub.lastHost != "192.0.2.1" {
+		t.Errorf("lookup lastHost: got %q want the saved host 192.0.2.1", stub.lastHost)
+	}
 }
 
 // TestRunWithRediscover_LookupCancelled verifies the SIGINT-during-rediscover
@@ -470,6 +479,9 @@ func TestRunYNCAWithRediscover_LookupFails(t *testing.T) {
 
 	err := runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, op)
 	assertUnreachable(t, err, "living-room", "uuid:abc")
+	if stub.lastHost != "192.0.2.1" {
+		t.Errorf("lookup lastHost: got %q want the saved host 192.0.2.1", stub.lastHost)
+	}
 }
 
 // TestRunYNCAWithRediscover_LookupCancelled: SSDP returns
@@ -591,5 +603,36 @@ func TestRunYNCAWithRediscover_RetryNonTransport(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("op should run twice, got %d", calls)
+	}
+}
+
+// With --debug, the DHCP-rediscovery scan is traced like `discover`, so
+// a failed rediscovery shows whether any receiver answered.
+func TestRunWithRediscover_DebugTracesLookup(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		stub := &stubLookup{err: errors.New("not found")}
+		stub.install(t)
+		s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+		s.debug = debuglog.New(io.Discard, debug)
+
+		transportErr := newTransportError(t)
+		_ = runWithRediscover(context.Background(), s, func(*yxc.Client) error { return transportErr })
+		if stub.traced != debug {
+			t.Errorf("debug=%v: lookup traced=%v", debug, stub.traced)
+		}
+	}
+}
+
+func TestRunYNCAWithRediscover_DebugTracesLookup(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		stub := &stubLookup{err: errors.New("not found")}
+		stub.install(t)
+		s := newStateForTest(t, "living-room", "uuid:abc", "192.0.2.1")
+		s.debug = debuglog.New(io.Discard, debug)
+
+		_ = runYNCAWithRediscover(context.Background(), s, ynaTestTimeout, func(*ynca.Client) error { return io.EOF })
+		if stub.traced != debug {
+			t.Errorf("debug=%v: lookup traced=%v", debug, stub.traced)
+		}
 	}
 }

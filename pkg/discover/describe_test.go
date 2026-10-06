@@ -3,15 +3,18 @@ package discover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// describeTestTimeout leaves the SSDP sub-budget (half of it) generous
+// describeTestTimeout leaves the SSDP sub-budget (a quarter of it) generous
 // enough that -race scheduling doesn't push a loopback reply past it.
 const describeTestTimeout = 2 * time.Second
 
@@ -68,30 +71,12 @@ func serveDescription(t *testing.T, body string) *httptest.Server {
 	return srv
 }
 
-// startSSDPResponder listens on 127.0.0.1 for one M-SEARCH and hands it
-// to respond. It returns the port to aim Describe at. Cleanup waits for
-// respond to finish so it never reports after the test has ended.
+// startSSDPResponder listens on 127.0.0.1 and hands every M-SEARCH it
+// receives to respond. It returns the port to aim Describe at.
 func startSSDPResponder(t *testing.T, respond func(req string, from *net.UDPAddr)) int {
 	t.Helper()
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatalf("listen udp: %v", err)
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		buf := make([]byte, 2048)
-		n, from, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			return
-		}
-		respond(string(buf[:n]), from)
-	}()
-	t.Cleanup(func() {
-		_ = conn.Close()
-		<-done
-	})
-	return conn.LocalAddr().(*net.UDPAddr).Port
+	r := startUDPResponder(t, func(_ int, req string, from *net.UDPAddr) { respond(req, from) })
+	return r.addr.Port
 }
 
 // replySSDP sends an SSDP search response from a fresh socket bound to
@@ -173,6 +158,168 @@ func TestDescribe_FallsBackToWellKnownURLWithoutSSDPReply(t *testing.T) {
 	}
 }
 
+// One lost unicast M-SEARCH (or reply) must not cost the SSDP path: the
+// receiver answers only the third request, and the fallback port is
+// closed so using it would fail.
+func TestDescribe_ResendsUnicastMSearch(t *testing.T) {
+	srv := serveDescription(t, sampleYamahaXML)
+	r := startUDPResponder(t, func(n int, _ string, from *net.UDPAddr) {
+		if n == 3 {
+			replySSDP(t, net.IPv4(127, 0, 0, 1), from, srv.URL+describeFallbackPath)
+		}
+	})
+	stubDescribePorts(t, r.addr.Port, closedFallbackPort)
+
+	dev, err := Describe(context.Background(), "127.0.0.1", describeTestTimeout)
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if dev.UDN != sampleYamahaUDN {
+		t.Errorf("UDN: got %q want %q", dev.UDN, sampleYamahaUDN)
+	}
+	if reqs, _ := r.requests(); len(reqs) != 3 {
+		t.Errorf("M-SEARCH count: got %d want 3", len(reqs))
+	}
+}
+
+// countingDescription serves the description at the well-known path,
+// running stall(n) first for the n-th request (from 1); stall reports
+// whether to stop there instead of serving. It returns the fallback port
+// and a function reporting how many requests arrived.
+func countingDescription(t *testing.T, stall func(n int, w http.ResponseWriter, r *http.Request) bool) (string, func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	count := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc(describeFallbackPath, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		count++
+		n := count
+		mu.Unlock()
+		if stall(n, w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+		_, _ = w.Write([]byte(sampleYamahaXML))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split httptest addr: %v", err)
+	}
+	return port, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return count
+	}
+}
+
+// stallBody sends headers and half the description, then nothing until
+// the client gives up, as a stalled receiver does.
+func stallBody(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
+	_, _ = w.Write([]byte(sampleYamahaXML[:len(sampleYamahaXML)/2]))
+	w.(http.Flusher).Flush()
+	<-r.Context().Done()
+}
+
+// The receiver's description server stalls mid-body on some fetches;
+// `config add` used to save without a UDN when that happened.
+func TestDescribe_RetriesStalledFetch(t *testing.T) {
+	port, requests := countingDescription(t, func(n int, w http.ResponseWriter, r *http.Request) bool {
+		if n == 1 {
+			stallBody(w, r)
+			return true
+		}
+		return false
+	})
+	silent := startSSDPResponder(t, func(string, *net.UDPAddr) {})
+	stubDescribePorts(t, silent, port)
+
+	dev, err := Describe(context.Background(), "127.0.0.1", describeTestTimeout)
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if dev.UDN != sampleYamahaUDN {
+		t.Errorf("UDN: got %q want %q", dev.UDN, sampleYamahaUDN)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("description requests: got %d want 2", got)
+	}
+}
+
+func TestDescribe_DoesNotRetryDeterministicFailure(t *testing.T) {
+	port, requests := countingDescription(t, func(_ int, w http.ResponseWriter, _ *http.Request) bool {
+		http.NotFound(w, nil)
+		return true
+	})
+	silent := startSSDPResponder(t, func(string, *net.UDPAddr) {})
+	stubDescribePorts(t, silent, port)
+
+	if _, err := Describe(context.Background(), "127.0.0.1", describeTestTimeout); err == nil {
+		t.Fatal("expected an error for a 404 description")
+	}
+	if got := requests(); got != 1 {
+		t.Errorf("description requests: got %d want 1", got)
+	}
+}
+
+// timeout bounds the whole call, retry included, even when every fetch
+// stalls.
+func TestDescribe_StaysWithinTimeoutWhenEveryFetchStalls(t *testing.T) {
+	port, requests := countingDescription(t, func(_ int, w http.ResponseWriter, r *http.Request) bool {
+		stallBody(w, r)
+		return true
+	})
+	silent := startSSDPResponder(t, func(string, *net.UDPAddr) {})
+	stubDescribePorts(t, silent, port)
+
+	start := time.Now()
+	if _, err := Describe(context.Background(), "127.0.0.1", describeTestTimeout); err == nil {
+		t.Fatal("expected an error when every fetch stalls")
+	}
+	if elapsed := time.Since(start); elapsed > describeTestTimeout+500*time.Millisecond {
+		t.Errorf("Describe took %v, over its %v timeout", elapsed, describeTestTimeout)
+	}
+	if got := requests(); got != 2 {
+		t.Errorf("description requests: got %d want 2 (the retry must fit in the budget)", got)
+	}
+}
+
+// --debug on `config add` must show that the unicast M-SEARCH went
+// unanswered and the HTTP fallback was used: behind a firewall that drops
+// SSDP replies this is the path that still saves the receiver.
+func TestDescribe_TracesSilentSSDPAndFallback(t *testing.T) {
+	srv := serveDescription(t, sampleYamahaXML)
+	_, fallbackPort, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split httptest addr: %v", err)
+	}
+	silent := startSSDPResponder(t, func(string, *net.UDPAddr) {})
+	stubDescribePorts(t, silent, fallbackPort)
+	var lines []string
+	ctx := WithTrace(context.Background(), func(format string, args ...any) {
+		lines = append(lines, fmt.Sprintf(format, args...))
+	})
+
+	if _, err := Describe(ctx, "127.0.0.1", describeTestTimeout); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	out := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"→ ssdp M-SEARCH 1/3 to 127.0.0.1:" + strconv.Itoa(silent) + " (unicast)",
+		"→ ssdp M-SEARCH 3/3 to 127.0.0.1:" + strconv.Itoa(silent) + " (unicast)",
+		"← no unicast ssdp reply from 127.0.0.1 within " + (describeTestTimeout / 4).String(),
+		"trying the well-known URL",
+		"→ GET http://127.0.0.1:" + fallbackPort + describeFallbackPath,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("trace missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestDescribe_RejectsUnusableDescriptions(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -250,7 +397,7 @@ func TestDescribe_HonorsCancelledContext(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("expected context.Canceled, got %v", err)
 		}
-		// Without cancellation the SSDP wait alone is timeout/2.
+		// Without cancellation the SSDP wait alone is timeout/4.
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Fatalf("Describe took %v after cancel; expected it to stop promptly", elapsed)
 		}

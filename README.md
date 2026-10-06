@@ -83,6 +83,16 @@ To save a receiver, use any of:
 - `yamaha config add <alias> --host <ip>` — non-interactive; for when you already know the IP or multicast doesn't reach the receiver;
 - editing the YAML at `yamaha config path` (see [Configuration](#configuration)).
 
+### How the LAN search works
+
+The wizard, `discover`, and DHCP rediscovery first send an SSDP M-SEARCH (three times, to ride out lost packets) and wait 3 s for replies.
+
+Yamaha receivers answer by unicast UDP from an ephemeral port. A stateful firewall on your computer (one that drops unsolicited inbound UDP, as many Linux setups do by default) therefore drops the replies, even though the receiver answers `ping` and HTTP. Firewall rules that allow source port 1900 don't match them.
+
+So when SSDP finds no Yamaha receiver, the search falls back to probing TCP port 49154 (where receivers serve their UPnP description) on every address of this computer's private IPv4 subnets: the whole subnet up to a /24, or the /24 around your address on a wider one. (DHCP rediscovery probes only the /24 around the receiver's saved IP; see [DHCP resilience](#dhcp-resilience).) These are outbound connections, which a stateful firewall lets back in. The subnet carrying your default route goes first, and at most four /24s are probed. The probe adds about 2 s per /24 when it runs, and nothing when SSDP works.
+
+When both find nothing, the wizard and `discover --add` exit 69 with a hint, and plain `discover` prints `[]` with a `warning:` on stderr. The receiver is then off, on another subnet, or behind a firewall that also blocks outbound connections. Save it by address with `yamaha config add <alias> --host <ip>`, which needs neither. `--debug` shows each M-SEARCH, every reply, and the probe (see [Debugging](#debugging)).
+
 ## Commands
 
 ```text
@@ -425,7 +435,7 @@ A capability probe runs once per invocation. Devices that don't speak YNCA fail 
 
 Receivers on home networks routinely get a new IP after DHCP renewals or router reboots. The CLI handles this transparently when the active device came from the config file (alias-resolved, with a saved UDN).
 
-On any transport error — YXC HTTP or YNCA TCP — the CLI runs a 3 s SSDP scan filtered by manufacturer = `Yamaha Corporation`, matches the saved UDN, atomically updates the config with the new IP, and retries the original command once. The user sees only the success result — pass `--debug` to see the rediscovery line.
+On any transport error — YXC HTTP or YNCA TCP — the CLI runs the LAN search (a 3 s SSDP scan, then, if SSDP didn't find the saved UDN, a probe of the /24 around the saved IP), filters by manufacturer = `Yamaha Corporation`, matches the saved UDN, atomically updates the config with the new IP, and retries the original command once. The user sees only the success result — pass `--debug` to see the rediscovery line.
 
 **Skipped when:**
 
@@ -433,6 +443,8 @@ On any transport error — YXC HTTP or YNCA TCP — the CLI runs a 3 s SSDP scan
 - The config entry has no UDN (pre-v5 config, or `config add` couldn't probe the receiver). Re-run `yamaha discover --add` or `yamaha config add <alias> --host <ip> --force` to refresh the entry, or use `--host` directly. Otherwise: exit 69.
 
 At most one rediscovery attempt per command. Repeated failures fall through to exit 69.
+
+Behind a firewall that drops the SSDP replies, the probe still finds the receiver as long as its new address is in the same /24 as the saved one (see [How the LAN search works](#how-the-lan-search-works)). It runs only when the saved host is an IP address on one of your computer's subnets: a receiver saved by hostname, or a laptop away from home, gets SSDP only, so no unrelated network is probed.
 
 ## Debugging
 
@@ -444,7 +456,36 @@ $ yamaha --debug volume +5
 ← 200 {"response_code":0}
 ```
 
-Retries are logged as `→ retry`; DHCP rediscovery as `→ rediscover alias=… udn=…`. For the YNCA backend, `--debug` traces each line on the wire instead:
+Retries are logged as `→ retry`; DHCP rediscovery as `→ rediscover alias=… udn=…`.
+
+Discovery is traced too (`discover`, the first-run wizard, DHCP rediscovery, and `config add`): each M-SEARCH, each reply with its source and Location, and each description fetched, retried, or skipped, with the reason. Here three M-SEARCHes drew two replies:
+
+```text
+$ yamaha --debug discover
+→ ssdp M-SEARCH 1/3 to 239.255.255.250:1900 via en0 (192.168.1.182)
+← ssdp 192.168.1.116:40449 location=http://192.168.1.116:49154/MediaRenderer/desc.xml
+→ ssdp M-SEARCH 2/3 to 239.255.255.250:1900 via en0 (192.168.1.182)
+→ ssdp M-SEARCH 3/3 to 239.255.255.250:1900 via en0 (192.168.1.182)
+← ssdp 192.168.1.116:40449 location=http://192.168.1.116:49154/MediaRenderer/desc.xml
+→ GET http://192.168.1.116:49154/MediaRenderer/desc.xml
+← found RX-V583 FBE863 (RX-V583) at 192.168.1.116, uuid:9ab0c000-f668-11de-9976-00a0defbe863
+```
+
+Behind a stateful firewall the SSDP replies never arrive, and the subnet probe takes over (captured on a test network):
+
+```text
+$ yamaha --debug discover
+→ ssdp M-SEARCH 1/3 to 239.255.255.250:1900 via veth0 (192.168.1.182)
+→ ssdp M-SEARCH 2/3 to 239.255.255.250:1900 via veth0 (192.168.1.182)
+→ ssdp M-SEARCH 3/3 to 239.255.255.250:1900 via veth0 (192.168.1.182)
+← ssdp no replies via veth0 (192.168.1.182) within 3s
+→ probe tcp/49154 on 192.168.1.0/24 (253 addresses)
+← probe: tcp/49154 open on 1 of 253 in 2.024s
+→ GET http://192.168.1.116:49154/MediaRenderer/desc.xml
+← found R-N800A Living Room (R-N800A) at 192.168.1.116, uuid:00000000-0000-0000-0000-00a0de000800
+```
+
+For the YNCA backend, `--debug` traces each line on the wire instead:
 
 ```text
 $ yamaha --debug ynca status

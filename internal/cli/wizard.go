@@ -22,7 +22,7 @@ const wizardScanTimeout = 3 * time.Second
 // chatter to errOut (stderr), reads answers from os.Stdin, and saves the
 // chosen device to disk.
 //
-// On zero devices found returns &unreachableError (which maps to exit 69).
+// On zero devices found returns &noReceiverFoundError (exit 69).
 // Returns the resolved alias and Device on success.
 func runWizard(ctx context.Context, out, errOut io.Writer, cfg *config.Config) (string, config.Device, error) {
 	if cfg == nil {
@@ -30,14 +30,12 @@ func runWizard(ctx context.Context, out, errOut io.Writer, cfg *config.Config) (
 	}
 
 	fmt.Fprintln(errOut, "No device configured. Searching the LAN…")
-	devs, err := discover.Search(ctx, wizardScanTimeout)
+	devs, err := searchFn(ctx, wizardScanTimeout)
 	if err != nil {
 		return "", config.Device{}, fmt.Errorf("LAN search failed: %w", err)
 	}
 	if len(devs) == 0 {
-		return "", config.Device{}, &unreachableError{
-			cause: fmt.Errorf("no Yamaha devices found on LAN; pass --host <ip> manually"),
-		}
+		return "", config.Device{}, &noReceiverFoundError{}
 	}
 
 	reader := bufio.NewReader(os.Stdin)

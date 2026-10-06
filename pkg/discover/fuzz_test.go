@@ -26,7 +26,7 @@ func FuzzLocationFromSSDPResponse(f *testing.F) {
 		"HTTP/1.1 200 OK\r\nLocation: http://a\r\nLocation: http://b\r\n\r\n",
 		"HTTP/1.1 200 OK\r\nLocation: http://a\rHost: b\r\n\r\n",
 		"NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nLOCATION: " + loc + "\r\nNTS: ssdp:alive\r\n\r\n",
-		// About as long as the read loop's 2048-byte buffer allows.
+		// A Location of about 2 KB.
 		"HTTP/1.1 200 OK\r\nLocation: http://" + strings.Repeat("a", 2000) + "/\r\n\r\n",
 		"",
 		"\x00",

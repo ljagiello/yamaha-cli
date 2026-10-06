@@ -13,9 +13,12 @@ import (
 	"github.com/ljagiello/yamaha-cli/pkg/yxc"
 )
 
-// rediscoverTimeout bounds the SSDP scan launched on transport failure.
-// 3s is the same budget the first-run wizard uses; long enough for a
-// healthy LAN, short enough that the user notices the redo if it fails.
+// rediscoverTimeout bounds the SSDP wait (and each description fetch) of
+// the lookup launched on transport failure. 3s is the same budget the
+// first-run wizard uses; long enough for a healthy LAN, short enough
+// that the user notices the redo if it fails. When SSDP misses the
+// receiver, probing its last /24 adds about 2s more (see
+// discover.LookupByUDN).
 const rediscoverTimeout = 3 * time.Second
 
 // lookupByUDNFn is the package-level seam that runWithRediscover calls
@@ -45,7 +48,7 @@ func runWithRediscover(ctx context.Context, s *state, op func(*yxc.Client) error
 	}
 
 	logRediscover(s.debug, s.alias, s.device.UDN)
-	newDev, lookupErr := lookupByUDNFn(ctx, s.device.UDN, rediscoverTimeout)
+	newDev, lookupErr := lookupByUDNFn(discoveryCtx(ctx, s.debug), s.device.UDN, s.device.Host, rediscoverTimeout)
 	if lookupErr != nil {
 		// If the user cancelled (Ctrl-C) during the SSDP scan, surface
 		// the cancellation rather than the original transport error so
@@ -149,7 +152,7 @@ func runYNCAWithRediscover(ctx context.Context, s *state, timeout time.Duration,
 	}
 
 	logRediscover(s.debug, s.alias, s.device.UDN)
-	newDev, lookupErr := lookupByUDNFn(ctx, s.device.UDN, rediscoverTimeout)
+	newDev, lookupErr := lookupByUDNFn(discoveryCtx(ctx, s.debug), s.device.UDN, s.device.Host, rediscoverTimeout)
 	if lookupErr != nil {
 		if errors.Is(lookupErr, context.Canceled) || ctx.Err() != nil {
 			return &cancelledError{}

@@ -15,8 +15,11 @@ import (
 )
 
 // configAddProbeTimeout bounds the UPnP description probe `config add`
-// runs to capture the receiver's UDN.
-const configAddProbeTimeout = 3 * time.Second
+// runs to capture the receiver's UDN. Describe splits it 2s for unicast
+// SSDP, then 3s and 3s for the description fetch and its one retry: over
+// Wi-Fi an RX-V583 stalls past 3s on some fetches (3 of 40 with curl).
+// A healthy receiver answers in well under a second.
+const configAddProbeTimeout = 8 * time.Second
 
 // describeFn is overridable for tests.
 var describeFn = discover.Describe
@@ -114,7 +117,7 @@ func runConfigAdd(cmd *cobra.Command, args []string) error {
 
 	errOut := cmd.ErrOrStderr()
 	dev := config.Device{Host: host, DefaultZone: zone}
-	found, probeErr := describeFn(cmd.Context(), host, configAddProbeTimeout)
+	found, probeErr := describeFn(cmdDiscoveryCtx(cmd), host, configAddProbeTimeout)
 	if probeErr == nil {
 		fmt.Fprintf(errOut, "Found %s (%s, %s)\n", found.Name, found.Model, host)
 		dev.UDN = found.UDN

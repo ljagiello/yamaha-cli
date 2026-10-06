@@ -194,7 +194,7 @@ func TestRunNetUSB_FFCtxCancelStillSendsEnd(t *testing.T) {
 	// rediscovered host.
 	var lookupHits atomic.Int32
 	prevLookup := lookupByUDNFn
-	lookupByUDNFn = func(ctx context.Context, udn string, timeout time.Duration) (discover.Device, error) {
+	lookupByUDNFn = func(ctx context.Context, udn, lastHost string, timeout time.Duration) (discover.Device, error) {
 		lookupHits.Add(1)
 		return discover.Device{}, errors.New("test: lookup must not be called on cancel path")
 	}
