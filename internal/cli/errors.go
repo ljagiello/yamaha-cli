@@ -75,6 +75,21 @@ func (e *unreachableError) Error() string {
 
 func (e *unreachableError) Unwrap() error { return e.cause }
 
+// noReceiverFoundHint explains an empty LAN search. The search already
+// fell back from SSDP to probing this computer's subnets, so what is
+// left is a receiver that is off, on another subnet, or behind a
+// firewall that also blocks outbound connections; saving it by address
+// needs neither.
+const noReceiverFoundHint = "no Yamaha receiver found by the SSDP search, " +
+	"nor by the probe of TCP port 49154 that follows it on this computer's private subnets (if it has any; --debug shows what was tried). " +
+	"If it is on, save it by address instead: yamaha config add <alias> --host <ip>"
+
+// noReceiverFoundError is returned when the first-run wizard or
+// `discover --add` finds no Yamaha receiver. Exit code 69.
+type noReceiverFoundError struct{}
+
+func (e *noReceiverFoundError) Error() string { return noReceiverFoundHint }
+
 // cancelledError marks user-driven SIGINT cancellation so the exit-code
 // mapper can return 130 even after the error has bubbled through wrappers.
 type cancelledError struct{ cause error }
@@ -108,6 +123,10 @@ func ErrorExitCode(err error) int {
 	// Unreachable / DHCP-rediscover failed.
 	var ue *unreachableError
 	if errors.As(err, &ue) {
+		return 69
+	}
+	var nrf *noReceiverFoundError
+	if errors.As(err, &nrf) {
 		return 69
 	}
 	if yxc.IsTransport(err) {

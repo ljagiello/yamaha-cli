@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -10,10 +11,34 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ljagiello/yamaha-cli/internal/config"
+	"github.com/ljagiello/yamaha-cli/internal/debuglog"
 	"github.com/ljagiello/yamaha-cli/pkg/discover"
 )
 
 const discoverScanTimeout = 3 * time.Second
+
+// searchFn is the LAN search behind `discover` and the first-run wizard.
+// Overridable for tests.
+var searchFn = discover.Search
+
+// discoveryCtx returns ctx with discovery steps (M-SEARCH sends, replies,
+// skipped descriptions) traced to dbg when --debug / YAMAHA_DEBUG is on.
+func discoveryCtx(ctx context.Context, dbg *debuglog.Logger) context.Context {
+	if !dbg.Enabled() {
+		return ctx
+	}
+	return discover.WithTrace(ctx, dbg.Tracef)
+}
+
+// cmdDiscoveryCtx is discoveryCtx for cmd's context and the --debug
+// logger setupState attached to it.
+func cmdDiscoveryCtx(cmd *cobra.Command) context.Context {
+	var dbg *debuglog.Logger
+	if s := stateFromCmd(cmd); s != nil {
+		dbg = s.debug
+	}
+	return discoveryCtx(cmd.Context(), dbg)
+}
 
 func newDiscoverCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -21,20 +46,20 @@ func newDiscoverCmd() *cobra.Command {
 		Short: "Find Yamaha receivers on the local network",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
+			ctx := cmdDiscoveryCtx(cmd)
 			add, _ := cmd.Flags().GetBool("add")
 
-			devs, err := discover.Search(ctx, discoverScanTimeout)
+			devs, err := searchFn(ctx, discoverScanTimeout)
 			if err != nil {
 				return err
 			}
 			if len(devs) == 0 {
 				if add {
-					return &unreachableError{
-						cause: fmt.Errorf("no Yamaha devices found on LAN; pass --host <ip> manually"),
-					}
+					return &noReceiverFoundError{}
 				}
-				// Plain discover with no results: print an empty payload.
+				// Plain discover with no results: an empty payload on
+				// stdout for scripts, and why it may be empty on stderr.
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: "+noReceiverFoundHint)
 				return printResult(cmd, []map[string]any{})
 			}
 

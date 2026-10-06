@@ -30,6 +30,7 @@ func TestErrorExitCode(t *testing.T) {
 		{"usage", &usageError{msg: "bad flag"}, 2},
 		{"no-device-configured", &noDeviceConfiguredError{}, 64},
 		{"unreachable", &unreachableError{alias: "living-room", udn: "uuid:x"}, 69},
+		{"no-receiver-found", &noReceiverFoundError{}, 69},
 		{"yxc-code-5", &yxc.Error{Code: 5, Message: "device not ready"}, 70},
 		{"yxc-code-6", &yxc.Error{Code: 6, Message: "not found"}, 70},
 		{"ynca-undefined", &ynca.ErrUndefinedCommand{Line: "@MAIN:FOO=?"}, 70},

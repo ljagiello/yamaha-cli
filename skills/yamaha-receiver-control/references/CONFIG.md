@@ -44,7 +44,7 @@ Highest priority wins. Flag/env pairs are adjacent.
 5. `default_device` from config.
 6. **Single-device shortcut**: if exactly one entry exists in `devices`, use it (regardless of `default_device`).
 7. None of the above → trigger first-run flow:
-   - **Interactive (stdin and stdout are a TTY)**: SSDP scan → prompt to pick → prompt for alias → save → re-run command transparently. Zero-found exits **69**.
+   - **Interactive (stdin and stdout are a TTY)**: SSDP scan → prompt to pick → prompt for alias → save → re-run command transparently. Zero-found exits **69** with `no Yamaha receiver found by the SSDP search, nor by the probe of TCP port 49154…` and a pointer to `config add <alias> --host <ip>`.
    - **Non-interactive**: exit **64** with `no device configured; run 'yamaha discover --add' or 'yamaha config add <alias> --host <ip>', or pass --host`.
 
 ## Saving a device
@@ -53,8 +53,8 @@ A receiver command run with `--host` / `YAMAHA_HOST` never writes the config. To
 
 | Way | Needs | UDN saved |
 |---|---|---|
-| First-run wizard (any receiver command, nothing resolved) | TTY + SSDP multicast | Yes |
-| `yamaha discover --add` | TTY + SSDP multicast | Yes |
+| First-run wizard (any receiver command, nothing resolved) | TTY; receiver on this computer's subnet (found by SSDP, else a TCP probe) | Yes |
+| `yamaha discover --add` | TTY; receiver on this computer's subnet (found by SSDP, else a TCP probe) | Yes |
 | `yamaha config add <alias> --host <ip>` | The IP; no TTY, no multicast | Yes if the probe reaches the receiver; else a `warning:` and no UDN. A non-Yamaha device at that address: nothing saved (exit 1) |
 | Hand-edit the file at `yamaha config path` | — | Only if you add it |
 
@@ -66,11 +66,12 @@ When the active device was config-resolved (alias != "") AND has a saved UDN:
 
 1. The first command run in a session starts at the saved IP.
 2. If a transport error occurs — YXC HTTP (after the in-Client retry: connection refused, no route, timeout, ECONNRESET) or YNCA TCP (dial failure, EOF on stale conn) — the CLI:
-   - Runs a 3 s SSDP scan filtered by `manufacturer == "Yamaha Corporation"`.
+   - Runs a 3 s SSDP scan filtered by `manufacturer == "Yamaha Corporation"`; if that misses the UDN and the saved host is an IPv4 address on one of this computer's subnets, probes TCP port 49154 on the /24 around the saved address (about 2 s more). A saved hostname, or a saved address on a network this computer isn't on, gets SSDP only.
    - Matches the response set by UDN.
    - On hit: atomically updates `devices.<alias>.host`, logs `→ rediscover alias=… udn=…` (when `--debug`), retries the original command once.
    - On miss: exits **69** with `device "<alias>" (UDN <udn>) not reachable`.
 3. At most one rediscovery attempt per command.
+4. A stateful firewall that drops the SSDP replies doesn't stop rediscovery: the TCP probe still finds the receiver if its new address is in the same /24 as its saved one.
 
 **Skipped when:**
 - Active device is `--host` / `YAMAHA_HOST` (anonymous).

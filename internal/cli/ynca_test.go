@@ -268,7 +268,7 @@ func TestYnca_RediscoversOnDHCPShift(t *testing.T) {
 
 	// Stub the SSDP lookup to "find" the device at newAddr.
 	prevLookup := lookupByUDNFn
-	lookupByUDNFn = func(_ context.Context, _ string, _ time.Duration) (discover.Device, error) {
+	lookupByUDNFn = func(context.Context, string, string, time.Duration) (discover.Device, error) {
 		return discover.Device{Host: newAddr}, nil
 	}
 	t.Cleanup(func() { lookupByUDNFn = prevLookup })
@@ -396,7 +396,7 @@ func TestYnca_SendNotRetriedOnTransport(t *testing.T) {
 	// rediscovery. We track calls to verify.
 	var lookupCalls atomic.Int64
 	prevLookup := lookupByUDNFn
-	lookupByUDNFn = func(_ context.Context, _ string, _ time.Duration) (discover.Device, error) {
+	lookupByUDNFn = func(context.Context, string, string, time.Duration) (discover.Device, error) {
 		lookupCalls.Add(1)
 		return discover.Device{Host: addr, UDN: "uuid:test-1"}, nil
 	}

@@ -250,7 +250,7 @@ func setupState(cmd *cobra.Command) error {
 			if !isStdinTTY() || !isStdoutTTY() {
 				return &noDeviceConfiguredError{}
 			}
-			newAlias, newDev, werr := runWizard(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg)
+			newAlias, newDev, werr := runWizard(discoveryCtx(cmd.Context(), dbg), cmd.OutOrStdout(), cmd.ErrOrStderr(), cfg)
 			if werr != nil {
 				return werr
 			}

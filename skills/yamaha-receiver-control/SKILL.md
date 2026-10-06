@@ -30,7 +30,7 @@ Then point the CLI at a receiver (pick **one**):
 | `YAMAHA_HOST=<ip>` env var | One-shot, scripted | None |
 | `--host <ip>` flag on each invocation | Quick experiments | None |
 
-**Agents: persist a receiver with `config add`.** There is no TTY, so the first-run wizard and `discover --add` can't prompt. Get the IP from the user, or from `yamaha discover --output json` if multicast reaches the receiver. If the probe fails, `config add` prints a `warning:` and saves without a UDN (no DHCP resilience). If the host answers as a non-Yamaha device, nothing is saved (exit 1): check the IP. The alias becomes `default_device` if none is set yet (`--set-default` forces it); `--force` overwrites an existing alias (otherwise exit 1). Run `config add` calls one at a time, not in parallel. Flags: [references/COMMANDS.md](references/COMMANDS.md).
+**Agents: persist a receiver with `config add`.** There is no TTY, so the first-run wizard and `discover --add` can't prompt. Get the IP from the user, or from `yamaha discover --output json` when the receiver is on this computer's subnet. If the probe fails, `config add` prints a `warning:` and saves without a UDN (no DHCP resilience). If the host answers as a non-Yamaha device, nothing is saved (exit 1): check the IP. The alias becomes `default_device` if none is set yet (`--set-default` forces it); `--force` overwrites an existing alias (otherwise exit 1). Run `config add` calls one at a time, not in parallel. Flags: [references/COMMANDS.md](references/COMMANDS.md).
 
 `--host` / `YAMAHA_HOST` skip the config: no wizard runs and nothing is saved. Without them, if no device resolves from config, a receiver command on a TTY starts an interactive wizard; non-TTY, it exits 64 with a hint.
 
@@ -168,6 +168,7 @@ These are non-obvious; check before assuming.
 - **`raw` parameters are url-encoded automatically.** Repeated keys append, so `client_list[0].ip_address=…` works as a positional `k=v` arg. Quote args with brackets to keep the shell happy.
 - **`ynca` runs a one-shot probe** before sending. Devices that don't speak YNCA fail with exit 70 and a `does not support YNCA` message. RX-V583 supports both protocols.
 - **DHCP IP changes are handled transparently** when the config entry has a UDN (saved by the wizard, `discover --add`, or a `config add` whose probe succeeded). Anonymous `--host` / `YAMAHA_HOST` calls do **not** auto-recover.
+- **`discover` takes about 3 s, longer when it has to probe; allow 20 s before killing it.** A probe of one /24 adds about 2 s (up to four /24s), and a description fetch that stalls is retried once (up to 3 s each). If SSDP finds no Yamaha receiver (a stateful host firewall drops the replies, which come from an ephemeral UDP port), it probes TCP port 49154 on this computer's private /24 subnets. An empty result after both (`[]` plus a `warning:` on stderr, exit 0; `discover --add` exits 69) means the receiver is off, on another subnet, or behind a firewall that also blocks outbound connections. If the user knows the IP, use `config add <alias> --host <ip>`. `--debug` shows what was tried.
 - **No HTTPS, no auth.** Anyone on the LAN can issue commands. Don't expose the receiver to untrusted networks.
 - **YXC is GET-only.** All operations are `GET /YamahaExtendedControl/v1/<method>?<params>` on port 80. No POSTs, no JSON request bodies. (YNCA is a separate line protocol on TCP/50000.)
 
@@ -183,6 +184,7 @@ Useful debug-trace prefixes:
 - `→ GET <url>` / `← <status> <body>` — every request/response.
 - `→ retry` — the silent single retry on transient transport errors fired.
 - `→ rediscover alias=… udn=…` — DHCP-resilience kicked in (config will be updated atomically).
+- `→ ssdp M-SEARCH n/3 …` / `← ssdp <ip:port> location=…` — discovery requests and replies. `← ssdp no replies via …` means nothing answered (often a host firewall). `→ probe tcp/49154 on …` / `← probe: tcp/49154 open on n of m` — the subnet probe that follows when SSDP found no receiver. `← retry <url>: <reason>` means a description fetch failed once and is being retried; `← skip <url>: <reason>` means a reply's description was rejected.
 - `link: rollback after …` — `link create` partial-failure rollback ran (leader stopped, follower server pointers cleared).
 
 ## Workflows
@@ -198,7 +200,7 @@ No manual `sleep` needed — `power on` blocks until ready.
 
 ### Discover and save a receiver in CI/scripts
 ```bash
-yamaha discover --output json | jq '.[0]'            # see what's there (needs SSDP multicast)
+yamaha discover --output json | jq '.[0]'            # see what's there (receivers on this subnet)
 yamaha config add living-room --host 192.168.1.116   # save it; no TTY needed
 ```
 
