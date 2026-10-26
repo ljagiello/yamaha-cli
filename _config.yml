@@ -2,6 +2,11 @@ title: yamaha-cli
 description: A command-line tool for controlling Yamaha YXC/MusicCast receivers over the local network.
 theme: jekyll-theme-cayman
 
+# The theme's footer reads "<repo> is maintained by <owner_name>", linked to owner_url.
+github:
+  owner_name: Lukasz Jagiello
+  owner_url: https://lukasz.jagiello.org
+
 # Hide repo cruft from the published site.
 exclude:
   - .github/
