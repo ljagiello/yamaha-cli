@@ -545,3 +545,5 @@ If a run fails after pushing its tag, don't delete the tag and run the workflow 
 ## Contributing & License
 
 Personal-use CLI; PRs welcome but no guarantees on review velocity. MIT — see [LICENSE](./LICENSE).
+
+Created by [Lukasz Jagiello](https://lukasz.jagiello.org).
