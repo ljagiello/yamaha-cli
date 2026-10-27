@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
